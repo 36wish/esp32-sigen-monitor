@@ -1,0 +1,17 @@
+.pio/
+include/secrets.h
+
+# PlatformIO-generated VS Code files (machine-specific paths); keep extensions.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+
+# Python
+__pycache__/
+*.pyc
+
+# Stray compiler dependency files
+*.d
+
+# mockups
+mockups/
