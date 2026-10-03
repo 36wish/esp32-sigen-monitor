@@ -14,20 +14,21 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
 
 ## Features
 
-- **Finds the system by itself.** On first boot it scans your /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. It will save the IP address so it can connect later without rescanning.
+
 - **Charge button.** A toggle for holding the battery full, for example before a big weather event. When pressed it sets the system's backup reserve (Backup SOC) to 100%. Released, it sets it back to 30%. The button follows the system: it rereads the reserve every 60 seconds, so changes made in the mySigen app show up on the screen.
-- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated it switches the system to draw maximum power from the grid. It will countdown to the start of the next hour, and automatically switces back to normal when it ends. The big number on screen switches to grid import, with a countdown to the top of the hour.
-- **Off-peak display** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
+- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated it switches the system to draw maximum power from the grid. It will countdown to the start of the next hour, and then automatically switces back to normal. The big number on screen switches to grid import.
+- **Off-peak indicator.** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
+- **Finds the system by itself.** On first boot it scans your home network  for the system. It will save the IP address so it can connect later without rescanning.
 - **Auto-brightness.** The board's light sensor dims the backlight in a dark room.
 
 ## Hardware
 
 | Part | Notes |
 |---|---|
-| **Sunton ESP32-3248S035R** (a "Cheap Yellow Display") | 3.5" 480×320 ST7796 LCD, resistive XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial. |
+| **Sunton ESP32-3248S035R** (aka "Cheap Yellow Display") | 3.5" 480×320 ST7796 LCD, resistive XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial. |
 | USB cable and 5 V supply | To power it on the wall. |
 
-On the Sigenergy side, the system's **Modbus TCP server** has to be enabled, and the display must be on the same LAN. The firmware talks to the system address (slave ID 247) on port 502. If Modbus TCP isn't on, ask your installer to enable it.
+On the Sigenergy side, the system's **Modbus TCP server** has to be enabled, and the display must be on the same LAN. If Modbus TCP isn't on, ask your installer to enable it.
 
 ## Building and flashing
 
@@ -63,7 +64,7 @@ The firmware is a [PlatformIO](https://platformio.org/) project for the Arduino 
    pio device monitor
    ```
 
-On boot it connects to WiFi, then either reconnects to the saved system IP or scans for the system. A full-screen message shows progress until the first reading arrives.
+On first boot it scans the /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. It then saves the IP for future boot.
 
 ## Touch calibration
 
@@ -91,17 +92,26 @@ All settings are in one block at the top of [src/main.cpp](src/main.cpp). The on
 
 ## Modbus registers
 
-All values are read from the system address (slave 247) in a single block read of 30005–30038 each second:
+Everything is read from the system address (slave 247).
+
+The live values come from a single block read of 30005–30038, about once a second:
 
 | Register | Value | Notes |
 |---|---|---|
 | 30005 | Grid power | s32, W; positive = importing |
-| 30014 | Battery SOC | %×10 |
+| 30014 | Battery SOC | u16, %×10 |
 | 30035 | PV power | s32, W |
 | 30037 | Battery power | s32, W; positive = charging |
-| 40046 | Backup SOC (read/write) | u16, %×10; used by the Charge button |
 
-House load is calculated as `PV + grid − battery`. It sends one request per poll cycle.
+House load is calculated as `PV + grid − battery`.
+
+The Charge button uses one more register, outside that block:
+
+| Register | Value | Notes |
+|---|---|---|
+| 40046 | Backup SOC (read/write) | u16, %×10. Written when Charge is tapped. Read on connect and every 60 s after that, so the button follows changes made in the mySigen app. |
+
+The system asks for at least one second between requests, so the firmware sends one request at a time. When a Charge write or Backup SOC read is due, it takes the place of that second's poll.
 
 
 ## Project layout
