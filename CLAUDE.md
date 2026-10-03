@@ -8,7 +8,7 @@ All firmware is in [src/main.cpp](src/main.cpp), a single file.
 
 - **Sunton ESP32-3248S035R** ("Cheap Yellow Display"): 3.5" 480x320 landscape, ST7796 SPI LCD, **resistive** XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial.
 - **Touch calibration:** with the board definition as it is, touch comes out mirrored left-to-right in landscape, and readings are 10–20 px off on top of that. `setup()` fixes both by setting smartdisplay's `touch_calibration_data` right after `smartdisplay_init()`. The correction acts on the raw portrait point before LVGL rotates it, so landscape X is controlled by raw Y. To re-fit it, log each tap's raw point and compare it with the button centre you aimed at.
-- **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness.
+- **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness. In a fully dark room (`CDS_OFF_RAW`), with no touch for `SCREEN_OFF_IDLE_MS`, the backlight turns off completely. The ESP keeps running and polling. The screen comes back on when the room gets brighter (`CDS_ON_RAW`) or when it is touched. A `wakeGuard` object on `lv_layer_top()` absorbs the tap that wakes it.
 - **Status LED:** the RGB LED is active-low and only switches on/off.
 - **Board definition:** [boards/esp32-3248S035R.json](boards/esp32-3248S035R.json) is pinned to the commit that matches `esp32_smartdisplay@2.1.1`. Upgrade the two together or not at all.
 
