@@ -9,7 +9,7 @@ All firmware is in [src/main.cpp](src/main.cpp), a single file.
 - **Sunton ESP32-3248S035R** ("Cheap Yellow Display"): 3.5" 480x320 landscape, ST7796 SPI LCD, **resistive** XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial.
 - **Touch calibration:** with the board definition as it is, touch comes out mirrored left-to-right in landscape and is also off by up to ~20 px. smartdisplay's `touch_calibration_data` corrects both. The correction acts on the raw portrait point before LVGL rotates it, and LVGL maps portrait (px, py) to landscape (479 − py, px).
   - **On-screen 3-point calibration:** hold the clock area (top right) for 5 s, or send `cal` over serial. Press and hold the centre of each of the 3 crosses; a 4th cross checks the fit (it has to land within 12 px). The result is saved in NVS (`tcal`) and loaded at boot. Serial logs each raw point and the final coefficients.
-  - The hardcoded values in `setup()` are only a fallback for when nothing has been saved yet. They came from one of these calibrations, so update them if the board's touch drifts.
+  - `TOUCH_CAL_FALLBACK` (settings block) is only a fallback for when nothing has been saved yet. They came from one of these calibrations, so update them if the board's touch drifts.
 - **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness.
 - **Status LED:** the RGB LED is active-low and only switches on/off.
 - **Board definition:** [boards/esp32-3248S035R.json](boards/esp32-3248S035R.json) is pinned to the commit that matches `esp32_smartdisplay@2.1.1`. Upgrade the two together or not at all.
@@ -23,7 +23,7 @@ pio run                  # build
 pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 ```
 
-- **First build:** copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and set the WiFi credentials. You can also override `TZ_INFO` there; it defaults to New Zealand.
+- **First build:** copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and set `WIFI_SSID` and `WIFI_PASSWORD` there. All other user settings (`TZ_INFO`, off-peak hours, Charge SOCs, brightness thresholds, `CAL_HOLD_MS`, `TOUCH_CAL_FALLBACK`) are in the settings block at the top of `main.cpp`.
 - **Uploading:** this board's CH340 auto-reset can't reliably enter download mode by itself. The user has to hold BOOT and tap RESET, otherwise you get "Wrong boot mode detected (0x13)". A normal reboot afterwards (an RTS pulse, DTR low) works fine.
 - **Serial monitor:** `pio device monitor` needs an interactive terminal. To read serial output from a script, use `pyserial` at 115200.
 
@@ -42,7 +42,7 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   - `30035` PV power (s32)
   - `30037` battery power (s32; positive = charging)
 
-  `40046` Backup SOC (u16, %×10) backs the Charge button. `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued Charge write first, then the Backup SOC sync read (on connect and every 60 s), then the normal poll. [sigen.py](sigen.py) is the PC-side reference script for the same registers.
+  `40046` Backup SOC (u16, %×10) backs the Charge button. `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued Charge write first, then the Backup SOC sync read (on connect and every 60 s), then the normal poll.
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, and `updateUi()`/`updateClock()` change it in place.
   - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`, `HERO_*`, `TILE_*`, `MODE_BTN_*`) and the palette (`COL_*`) are at the top of the file.
@@ -52,7 +52,7 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   - A full-screen overlay covers the dashboard while connecting or scanning. Once data has arrived, a reconnect only shows a spinner, and the last readings stay on screen.
   - **Hero:** the icon tile sits in the top-left corner and the big number (`font_hero_144`) starts at the left edge under it.
 - **Modes:** the home screen has two icon-only buttons stacked in a column between the big number and the battery. Charge (thundercloud) is on top and Free hour (clock) is below it; together they span the battery's height.
-  - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Pressed in writes Backup SOC 100% (sigen.py mode A), released writes 30% (mode B). Nothing is stored on the ESP: on every connect, and every 60 s after that (`CHARGE_SYNC_INTERVAL_MS`), the button is set from the plant's Backup SOC (pressed only if it's 100%), so changes made in the mySigen app show up. A read that was in flight when the button was tapped is discarded.
+  - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Pressed in writes Backup SOC 100% (`CHARGE_ON_SOC`), released writes 30% (`CHARGE_OFF_SOC`). Nothing is stored on the ESP: on every connect, and every 60 s after that (`CHARGE_SYNC_INTERVAL_MS`), the button is set from the plant's Backup SOC (pressed only if it's 100%), so changes made in the mySigen app show up. A read that was in flight when the button was tapped is discarded.
   - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the hero tile. In this mode the close button takes the top-left corner, with the hero tile and the "FREE HOUR" title to its right. The big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. The countdown runs in the mix bar's slot, extended across the hidden button column (`FREE_W`). When it reaches zero, or the close button is tapped, the screen goes back to home.
   - `updateUi()` checks `freeHour` to decide which values go where. The latest reading is kept in `last*Kw` so a mode switch redraws straight away.
   - **System hooks:** `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `ST_POLL`. `applyFreeHourMode()` is still a placeholder (`TODO(system)`): the UI calls it, but it doesn't send anything to the plant yet.

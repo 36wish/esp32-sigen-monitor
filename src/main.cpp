@@ -16,7 +16,51 @@
 #include <lwip/sockets.h>
 #include <errno.h>
 #include <math.h>
-#include "secrets.h"
+#include "secrets.h"  // WIFI_SSID, WIFI_PASSWORD
+
+// ══ settings ═════════════════════════════════════════════════════════════
+
+// POSIX TZ string for the on-screen clock (default: New Zealand).
+#define TZ_INFO "NZST-12NZDT,M9.5.0,M4.1.0/3"
+
+// Cheaper overnight rate (local time): the hero number is drawn grey from
+// OFFPEAK_START_HOUR:00 until OFFPEAK_END_HOUR:00.
+static const int OFFPEAK_START_HOUR = 21;
+static const int OFFPEAK_END_HOUR   = 7;
+
+// Charge button: the battery reserve (Backup SOC, %) written to the plant when
+// it's pressed in and when it's released.
+static const uint16_t CHARGE_ON_SOC  = 100;
+static const uint16_t CHARGE_OFF_SOC = 30;
+// Reread it this often so the button follows changes made elsewhere (mySigen app).
+static const uint32_t CHARGE_SYNC_INTERVAL_MS = 60000;
+
+// Full-scale value for the solar / grid / battery bars in the bottom strip.
+static const float BAR_MAX_KW = 8.0f;
+
+// Ambient-light auto brightness (CdS on GPIO34). The reading is low in bright
+// light and rises as it gets darker. Tune the two raw thresholds (see the
+// "CdS raw" serial log) to suit the room.
+static const float    BL_MIN         = 0.08f;  // never fully black, so the UI stays readable
+static const float    BL_MAX         = 1.0f;
+static const uint16_t CDS_BRIGHT_RAW = 30;     // at/below this -> BL_MAX
+static const uint16_t CDS_DARK_RAW   = 400;    // at/above this -> BL_MIN
+
+// Touch calibration: hold the clock this long to start it.
+static const uint32_t CAL_HOLD_MS = 5000;
+// Used until a calibration has been saved to NVS. The board definition's touch
+// mapping comes out mirrored left-to-right in landscape, and the uncalibrated
+// XPT2046 readings are 10-20px off on top of that; this corrects both on the
+// raw (portrait) point before LVGL rotates it (raw y runs the opposite way to
+// landscape x, so mirroring x means flipping y). From an on-screen 3-point
+// calibration of one board (3px off at the check point).
+static const touch_calibration_data_t TOUCH_CAL_FALLBACK = {
+  .valid = true,
+  .alphaX = 1.1148f, .betaX = -0.0107f, .deltaX = -19.5f,
+  .alphaY = 0.0206f, .betaY = -1.1100f, .deltaY = 502.0f,
+};
+
+// ═════════════════════════════════════════════════════════════════════════
 
 // ── Sigenergy Modbus layout  ─────────────────
 static const uint8_t  PLANT_SLAVE_ID   = 247;
@@ -25,31 +69,11 @@ static const uint16_t REGISTER_COUNT   = 34;    // covers 30005 .. 30038 inclusi
 static const uint16_t MODBUS_PORT      = 502;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const size_t   MAX_MODBUS_BYTES = 128;   // supports up to 64 registers
-
-// Charge button: battery reserve (Backup SOC) on the plant, as in sigen.py
-// modes A (on) and B (off).
-static const uint16_t BACKUP_SOC_REG = 40046;  // RW U16, %*10 (Sigenergy V2.9)
-static const uint16_t CHARGE_ON_SOC  = 100;    // sigen.py mode A
-static const uint16_t CHARGE_OFF_SOC = 30;     // sigen.py mode B
-// Reread it this often so the button follows changes made elsewhere (mySigen app).
-static const uint32_t CHARGE_SYNC_INTERVAL_MS = 60000;
-
-// POSIX TZ string for the on-screen clock; override in secrets.h if needed.
-#ifndef TZ_INFO
-#define TZ_INFO "NZST-12NZDT,M9.5.0,M4.1.0/3"
-#endif
-
-// Cheaper overnight rate (local time): the hero number is drawn grey from
-// OFFPEAK_START_HOUR:00 until OFFPEAK_END_HOUR:00.
-static const int OFFPEAK_START_HOUR = 21;
-static const int OFFPEAK_END_HOUR   = 7;
+static const uint16_t BACKUP_SOC_REG   = 40046; // RW U16, %*10 (Sigenergy V2.9)
 
 // Gap between the end of the plant IP and the start of the clock text; the
 // reconnect spinner (16px) sits centred in it.
 static const int IP_GAP = 30;
-
-// Full-scale value for the solar / grid / battery bars in the bottom strip.
-static const float BAR_MAX_KW = 8.0f;
 
 // Battery graphic geometry (top-right). 108px wide still fits "100%".
 static const int BATT_X = 360, BATT_Y = 34, BATT_W = 108, BATT_H = 170;
@@ -173,12 +197,7 @@ static int      shownSecsLeft = -1;
 static float lastGridKw, lastSocPct, lastPvKw, lastEssKw;
 
 // ── ambient-light auto brightness (CdS on GPIO34, ADC1 so it works with WiFi) ──
-// Reading is low in bright light and rises as it gets darker. Tune the two
-// raw thresholds (see the "CdS raw" serial log) to suit the room.
-static const float    BL_MIN         = 0.08f;  // never fully black, so the UI stays readable
-static const float    BL_MAX         = 1.0f;
-static const uint16_t CDS_BRIGHT_RAW = 30;     // at/below this -> BL_MAX
-static const uint16_t CDS_DARK_RAW   = 400;    // at/above this -> BL_MIN
+// Thresholds are in the settings at the top.
 static const uint32_t BL_INTERVAL_MS = 100;
 
 static float adaptiveBrightness() {
@@ -330,7 +349,7 @@ static ModbusResult modbusWriteRegister(WiFiClient &client, uint8_t slaveId,
 }
 
 // The spec lists 0x04 for RW registers but holding reads usually work too;
-// try 0x03 first and fall back, as sigen.py does.
+// try 0x03 first and fall back.
 static ModbusResult readBackupSoc(WiFiClient &client, uint16_t &raw) {
   ModbusResult r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x03, BACKUP_SOC_REG, 1, &raw);
   if (r == MB_EXCEPTION) r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x04, BACKUP_SOC_REG, 1, &raw);
@@ -1212,7 +1231,6 @@ static void updateCountdown() {
 // 90-degree rotation maps portrait (px, py) to landscape (479 - py, px).
 static const lv_point_t CAL_TARGETS[4] = { {48, 40}, {432, 160}, {240, 280}, {380, 250} };
 static const int      CAL_VERIFY_TOL = 12;       // px
-static const uint32_t CAL_HOLD_MS    = 5000;
 static const uint32_t CAL_TIMEOUT_MS = 30000;    // no touch for this long: give up, keep the old one
 static const int      CAL_SKIP       = 3;        // samples dropped at each end of a press (still settling)
 static const int      CAL_MIN_KEEP   = 3;        // samples needed after trimming (~0.3s press at 33ms reads)
@@ -1414,17 +1432,7 @@ void setup() {
   delay(300);
 
   smartdisplay_init();
-  // The board definition's touch mapping comes out mirrored left-to-right in
-  // landscape, and the uncalibrated XPT2046 readings are 10-20px off on top of
-  // that. Correct both on the raw (portrait) point before LVGL rotates it:
-  // raw y runs the opposite way to landscape x, so mirroring x means flipping y.
-  // From an on-screen 3-point calibration (3px off at the check point). Used
-  // until one has been saved to NVS (see "touch calibration").
-  touch_calibration_data = {
-    .valid = true,
-    .alphaX = 1.1148f, .betaX = -0.0107f, .deltaX = -19.5f,
-    .alphaY = 0.0206f, .betaY = -1.1100f, .deltaY = 502.0f,
-  };
+  touch_calibration_data = TOUCH_CAL_FALLBACK;  // until a saved one is loaded below
   lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
   lvLastTick = millis();
   smartdisplay_lcd_set_brightness_cb(adaptiveBrightness, BL_INTERVAL_MS);
