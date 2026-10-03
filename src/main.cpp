@@ -51,30 +51,39 @@ static const int IP_GAP = 30;
 // Full-scale value for the solar / grid / battery bars in the bottom strip.
 static const float BAR_MAX_KW = 8.0f;
 
-// Battery graphic geometry (top-right).
-static const int BATT_X = 342, BATT_Y = 34, BATT_W = 126, BATT_H = 170;
+// Battery graphic geometry (top-right). 108px wide still fits "100%".
+static const int BATT_X = 360, BATT_Y = 34, BATT_W = 108, BATT_H = 170;
 
 // Source-mix bar geometry.
-static const int MIX_W   = 310;
+static const int MIX_X   = 16;
+static const int MIX_W   = 286;
 static const int MIX_H   = 36;
 static const int MIX_GAP = 3;
 
-// Hero (house load) position. On the home screen it sits HERO_LIFT px higher to
-// make room for the mode buttons; under the free-hour header it drops back down.
-static const int HERO_Y = 24, HERO_TILE_Y = 52, HERO_LIFT = 14;
+// Hero: icon tile in the top-left corner, the number under it on a baseline at
+// y=152 (font_hero_144: line height 136, baseline 14 up from the bottom).
+// Under the free-hour header the tile shifts right to make room for the close button.
+static const int HERO_X = 16, HERO_Y = 30;
+static const int TILE_SIZE = 32;
+static const int TILE_X = 16, TILE_Y = 4;
+static const int FREE_TILE_X = 58, FREE_TILE_Y = 6;
 
-// Mode buttons, in the gap between the lifted hero and the mix bar.
-static const int MODE_BTN_Y = 117, MODE_BTN_W = 151, MODE_BTN_H = 40;
+// Mode buttons: icon-only, stacked in a column between the hero and the
+// battery, together spanning the battery's height.
+static const int MODE_BTN_X = 314, MODE_BTN_W = 40, MODE_BTN_H = 79;
+static const int CHARGE_BTN_Y = BATT_Y, FREE_BTN_Y = 122;
 static const int BTN_DROP   = 3;   // how far a button sinks when pressed in
 
-// Free-hour countdown: "mm:ss" right-aligned in the mix bar's slot, with a bar
-// beside it that drains to the top of the hour. font_num_44 digits are
-// proportional ("1" is 17px, "4" is 30px), so each digit gets its own fixed
-// cell; otherwise the text changes width every second and jumps around.
+// Free-hour countdown: "mm:ss" right-aligned in the mix bar's slot, which runs
+// on across the (hidden) button column to the battery, with a bar beside it
+// that drains to the top of the hour. font_num_44 digits are proportional
+// ("1" is 17px, "4" is 30px), so each digit gets its own fixed cell; otherwise
+// the text changes width every second and jumps around.
 static const int CD_DIGIT_W  = 30;  // widest digit in font_num_44
 static const int CD_COLON_W  = 11;
 static const int COUNTDOWN_W = 4 * CD_DIGIT_W + CD_COLON_W;
-static const int FREE_BAR_W  = MIX_W - COUNTDOWN_W - 16;
+static const int FREE_W      = BATT_X - 14 - MIX_X;
+static const int FREE_BAR_W  = FREE_W - COUNTDOWN_W - 16;
 
 // ── palette ──────────────────────────────────────────────────────────────
 static const uint32_t COL_BG        = 0x080c16;
@@ -101,7 +110,7 @@ static const uint32_t COL_RESERVE   = 0x818cf8;  // Charge mode (hold the batter
 static const uint32_t COL_FREE      = 0x22d3ee;  // free power hour
 static const uint32_t COL_OFFPEAK   = 0x9ca3b0;  // hero number during the cheap overnight rate
 
-LV_FONT_DECLARE(font_hero_112); // Montserrat SemiBold 112px, "-./0-9" only
+LV_FONT_DECLARE(font_hero_144); // Montserrat SemiBold 144px, "-./0-9" only
 LV_FONT_DECLARE(font_num_44);   // Montserrat SemiBold 44px, "%+-./0-9:" only
 
 Preferences prefs;
@@ -140,9 +149,9 @@ struct StripSection {
 static StripSection secSolar, secGrid, secBatt;
 
 // mode buttons (home screen) and the free-hour header/countdown
-static lv_obj_t *chargeBtn, *chargeIcon, *chargeLed;
+static lv_obj_t *chargeBtn, *chargeIcon;
 static lv_obj_t *freeBtn;
-static lv_obj_t *closeBtn, *freeTitle, *freeEndsLabel, *freeBar, *freeCountdown;
+static lv_obj_t *closeBtn, *freeTitle, *freeBar, *freeCountdown;
 static lv_obj_t *cdDigits[4];  // m m : s s, inside freeCountdown
 
 // ── modes ────────────────────────────────────────────────────────────────
@@ -643,12 +652,22 @@ static lv_obj_t *makeHouseIcon(lv_obj_t *tile, int size = 32) {
   return icon;
 }
 
-// ── button icons, drawn in a 24x24 container ──
-static lv_obj_t *makeBoltIcon(lv_obj_t *parent) {
-  static const lv_point_precise_t bolt[] = { {14, 2}, {6, 13}, {11, 13}, {9, 22}, {18, 10}, {13, 10}, {14, 2} };
+// ── button icons, drawn in a 24x24 container (storm: 32x32) ──
+static lv_obj_t *makeStormIcon(lv_obj_t *parent) {
+  // thundercloud: three round puffs on a flat base, a bolt dropping out of it
+  static const lv_point_precise_t bolt[] = { {18, 18}, {12, 24}, {19, 24}, {13, 30} };
+  static const int16_t puffs[][3] = { {5, 6, 10}, {11, 2, 14}, {19, 7, 9} };  // x, y, diameter
   lv_obj_t *icon = makeBox(parent);
-  lv_obj_set_size(icon, 24, 24);
-  iconLine(icon, bolt, 7, 2);
+  lv_obj_set_size(icon, 32, 32);
+  for (const auto &p : puffs) {
+    lv_obj_t *puff = makeFilledBox(icon, 0, LV_RADIUS_CIRCLE);
+    lv_obj_set_pos(puff, p[0], p[1]);
+    lv_obj_set_size(puff, p[2], p[2]);
+  }
+  lv_obj_t *base = makeFilledBox(icon, 0, 3);
+  lv_obj_set_pos(base, 4, 11);
+  lv_obj_set_size(base, 25, 6);
+  iconLine(icon, bolt, 4, 3);
   return icon;
 }
 
@@ -792,25 +811,25 @@ static void buildUi() {
 
   // ── hero: current house load ──
   //    (shows grid import instead during free hour; setFreeHourMode() swaps them)
-  houseTile = makeFilledBox(scr, COL_CARD, 14);
-  lv_obj_set_size(houseTile, 56, 56);
-  lv_obj_set_pos(houseTile, 14, HERO_TILE_Y - HERO_LIFT);
+  houseTile = makeFilledBox(scr, COL_CARD, 10);
+  lv_obj_set_size(houseTile, TILE_SIZE, TILE_SIZE);
+  lv_obj_set_pos(houseTile, TILE_X, TILE_Y);
   lv_obj_set_style_bg_color(houseTile, tint(COL_HOME, COL_CARD, 41), 0);
-  heroHouseIcon = makeHouseIcon(houseTile);
+  heroHouseIcon = makeHouseIcon(houseTile, ICON);
   setIconColor(heroHouseIcon, COL_HOME);
   heroGridIcon = makeGridIcon(houseTile);
   setIconColor(heroGridIcon, COL_IMPORT);
   lv_obj_add_flag(heroGridIcon, LV_OBJ_FLAG_HIDDEN);
 
-  heroRow = makeValueRow(scr, 80, HERO_Y - HERO_LIFT);
-  heroValue = makeLabel(heroRow, &font_hero_112, COL_TEXT, "-.-");
+  heroRow = makeValueRow(scr, HERO_X, HERO_Y);
+  heroValue = makeLabel(heroRow, &font_hero_144, COL_TEXT, "-.-");
   lv_obj_t *heroUnit = makeLabel(heroRow, &lv_font_montserrat_24, COL_MUTED, "kW");
   lv_obj_set_style_pad_left(heroUnit, 8, 0);
-  lv_obj_set_style_pad_bottom(heroUnit, 6, 0);  // baseline-align with the 112px value
+  lv_obj_set_style_pad_bottom(heroUnit, 9, 0);  // baseline-align with the 144px value
 
   // ── source mix: segmented bar, always solar | grid | battery left to right,
   //    bottom-aligned with the battery graphic ──
-  const int mixX = 16, mixW = MIX_W, mixY = BATT_Y + BATT_H - MIX_H;
+  const int mixX = MIX_X, mixW = MIX_W, mixY = BATT_Y + BATT_H - MIX_H;
   mixBar = makeFilledBox(scr, COL_CARD2, 10);
   lv_obj_set_pos(mixBar, mixX, mixY);
   lv_obj_set_size(mixBar, mixW, MIX_H);
@@ -827,28 +846,23 @@ static void buildUi() {
     lv_obj_add_flag(seg, LV_OBJ_FLAG_HIDDEN);
   }
 
-  // ── mode buttons (home screen, between the hero and the mix bar) ──
-  chargeBtn = makeButton(scr, 16, MODE_BTN_Y, MODE_BTN_W, MODE_BTN_H);
+  // ── mode buttons (home screen): icon-only, stacked between the hero and the battery ──
+  chargeBtn = makeButton(scr, MODE_BTN_X, CHARGE_BTN_Y, MODE_BTN_W, MODE_BTN_H);
   lv_obj_add_flag(chargeBtn, LV_OBJ_FLAG_CHECKABLE);
   lv_obj_set_style_bg_color(chargeBtn, tint(COL_RESERVE, COL_BG, 46), LV_STATE_CHECKED);
   lv_obj_set_style_bg_grad_color(chargeBtn, tint(COL_RESERVE, COL_BG, 128), LV_STATE_CHECKED);
   lv_obj_set_style_border_color(chargeBtn, lv_color_hex(COL_RESERVE), LV_STATE_CHECKED);
   lv_obj_set_style_border_width(chargeBtn, 2, LV_STATE_CHECKED);
-  chargeIcon = makeBoltIcon(chargeBtn);
+  chargeIcon = makeStormIcon(chargeBtn);
   setIconColor(chargeIcon, COL_RESERVE);
-  makeLabel(chargeBtn, &lv_font_montserrat_16, COL_TEXT, "Charge");
-  chargeLed = makeFilledBox(chargeBtn, COL_TEXT, LV_RADIUS_CIRCLE);  // "on" dot
-  lv_obj_set_size(chargeLed, 7, 7);
-  lv_obj_add_flag(chargeLed, (lv_obj_flag_t)(LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_HIDDEN));
-  lv_obj_align(chargeLed, LV_ALIGN_RIGHT_MID, -6, 0);
   lv_obj_add_event_cb(chargeBtn, onChargeToggled, LV_EVENT_VALUE_CHANGED, nullptr);
 
-  freeBtn = makeButton(scr, 16 + MODE_BTN_W + 8, MODE_BTN_Y, MODE_BTN_W, MODE_BTN_H);
+  freeBtn = makeButton(scr, MODE_BTN_X, FREE_BTN_Y, MODE_BTN_W, MODE_BTN_H);
   setIconColor(makeClockIcon(freeBtn), COL_FREE);
-  makeLabel(freeBtn, &lv_font_montserrat_16, COL_TEXT, "Free hour");
   lv_obj_add_event_cb(freeBtn, onFreeHourOpen, LV_EVENT_CLICKED, nullptr);
 
   // ── free-hour header + countdown (hidden until free hour starts) ──
+  //    close button in the corner, then the hero tile (moved by setFreeHourMode()), then the title
   closeBtn = makeButton(scr, 10, 4, 38, 36);
   setIconColor(makeCloseIcon(closeBtn), COL_TEXT);
   lv_obj_set_ext_click_area(closeBtn, 10);  // small target in the corner, resistive touch
@@ -856,10 +870,7 @@ static void buildUi() {
 
   freeTitle = makeLabel(scr, &lv_font_montserrat_14, COL_FREE, "FREE HOUR");
   lv_obj_set_style_text_letter_space(freeTitle, 2, 0);
-  lv_obj_set_pos(freeTitle, 60, 14);
-
-  freeEndsLabel = makeLabel(scr, &lv_font_montserrat_16, COL_MUTED, "Free power ends in");
-  lv_obj_set_pos(freeEndsLabel, mixX, 142);
+  lv_obj_set_pos(freeTitle, FREE_TILE_X + TILE_SIZE + 12, FREE_TILE_Y + (TILE_SIZE - 16) / 2);
 
   freeBar = makeBar(scr, mixX, mixY + 6, FREE_BAR_W, MIX_H - 6);
   lv_bar_set_range(freeBar, 0, 3600);
@@ -873,7 +884,7 @@ static void buildUi() {
   // baseline on the mix bar's bottom edge (font_num_44: line height 42, baseline 4)
   freeCountdown = makeBox(scr);
   lv_obj_set_size(freeCountdown, COUNTDOWN_W, 42);
-  lv_obj_set_pos(freeCountdown, mixX + mixW - COUNTDOWN_W, mixY + MIX_H - (42 - 4));
+  lv_obj_set_pos(freeCountdown, mixX + FREE_W - COUNTDOWN_W, mixY + MIX_H - (42 - 4));
   for (int i = 0, x = 0; i < 4; i++, x += CD_DIGIT_W) {
     if (i == 2) {
       lv_label_set_text(makeAlignedLabel(freeCountdown, &font_num_44, COL_FREE, x, 0, CD_COLON_W,
@@ -884,7 +895,7 @@ static void buildUi() {
                                    LV_TEXT_ALIGN_CENTER);
   }
 
-  for (lv_obj_t *o : { closeBtn, freeTitle, freeEndsLabel, freeBar, freeCountdown })
+  for (lv_obj_t *o : { closeBtn, freeTitle, freeBar, freeCountdown })
     lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
 
   // ── battery graphic ──
@@ -991,7 +1002,7 @@ static void updateUi(float gridKw, float socPct, float pvKw, float essKw) {
   if (homeKw < 0) homeKw = 0;
 
   // hero: house load, or grid import during free hour
-  // (whole kW from 10 up so "12.0 kW" doesn't run into the battery)
+  // (whole kW from 10 up so "12.0 kW" doesn't run into the buttons)
   float heroKw = freeHour ? fmaxf(gridKw, 0) : homeKw;
   snprintf(buf, sizeof(buf), heroKw >= 9.95f ? "%.0f" : "%.1f", heroKw);
   lv_label_set_text(heroValue, buf);
@@ -1105,8 +1116,6 @@ static void showChargeOn(bool on) {
   if (on) lv_obj_add_state(chargeBtn, LV_STATE_CHECKED);
   else    lv_obj_remove_state(chargeBtn, LV_STATE_CHECKED);
   setIconColor(chargeIcon, on ? COL_TEXT : COL_RESERVE);
-  if (on) lv_obj_clear_flag(chargeLed, LV_OBJ_FLAG_HIDDEN);
-  else    lv_obj_add_flag(chargeLed, LV_OBJ_FLAG_HIDDEN);
   // battery outline picks up the Charge colour so the mode shows across the room
   lv_color_t edge = on ? tint(COL_RESERVE, COL_BG, 191) : lv_color_hex(COL_BORDER);
   lv_obj_set_style_border_color(battBody, edge, 0);
@@ -1137,15 +1146,13 @@ static void setFreeHourMode(bool on) {
     if (on) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
     else    lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
   }
-  for (lv_obj_t *o : { closeBtn, freeTitle, freeEndsLabel, freeBar, freeCountdown }) {
+  for (lv_obj_t *o : { closeBtn, freeTitle, freeBar, freeCountdown }) {
     if (on) lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
     else    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
   }
 
-  // hero drops back under the header and shows the grid; strip shows the house
-  int lift = on ? 0 : HERO_LIFT;
-  lv_obj_set_y(houseTile, HERO_TILE_Y - lift);
-  lv_obj_set_y(heroRow, HERO_Y - lift);
+  // hero tile moves right of the close button and shows the grid; strip shows the house
+  lv_obj_set_pos(houseTile, on ? FREE_TILE_X : TILE_X, on ? FREE_TILE_Y : TILE_Y);
   lv_obj_set_style_bg_color(houseTile, tint(on ? COL_IMPORT : COL_HOME, COL_CARD, 41), 0);
   lv_obj_t *show[] = { on ? heroGridIcon : heroHouseIcon, on ? secGrid.altIcon : secGrid.icon };
   lv_obj_t *hide[] = { on ? heroHouseIcon : heroGridIcon, on ? secGrid.icon : secGrid.altIcon };
@@ -1194,6 +1201,207 @@ static void updateCountdown() {
   showSecsLeft((msLeft + 999) / 1000);
 }
 
+// ── touch calibration ────────────────────────────────────────────────────
+// 3-point calibration: a cross is shown at CAL_TARGETS[0..2], the raw XPT2046
+// point is averaged over each press, and smartdisplay fits the affine
+// correction from them. A 4th cross checks the fit before it's saved to NVS
+// (key "tcal"); a fit that misses by more than CAL_VERIFY_TOL starts over.
+// Start it by holding the clock for CAL_HOLD_MS, or by sending "cal" over serial.
+//
+// The correction acts on the portrait point before LVGL rotates it, and LVGL's
+// 90-degree rotation maps portrait (px, py) to landscape (479 - py, px).
+static const lv_point_t CAL_TARGETS[4] = { {48, 40}, {432, 160}, {240, 280}, {380, 250} };
+static const int      CAL_VERIFY_TOL = 12;       // px
+static const uint32_t CAL_HOLD_MS    = 5000;
+static const uint32_t CAL_TIMEOUT_MS = 30000;    // no touch for this long: give up, keep the old one
+static const int      CAL_SKIP       = 3;        // samples dropped at each end of a press (still settling)
+static const int      CAL_MIN_KEEP   = 3;        // samples needed after trimming (~0.3s press at 33ms reads)
+static const int      SCREEN_W       = 480;
+
+static lv_indev_read_cb_t touchReadCb;  // smartdisplay's: driver read + touch_calibration_data
+static touch_calibration_data_t calPrev;  // what was in force before calibrating
+static int        calStep = -1;          // -1 idle, 0..2 collecting, 3 verifying
+static bool       calArmed;              // false until the press that started it is released
+static lv_point_t calSamples[64];
+static int        calCount;
+static lv_point_t calTap;                // averaged point of the last press
+static bool       calTapReady;
+static uint32_t   calLastTouch;
+static lv_point_t calRaw[3];
+static lv_obj_t  *calLayer, *calCross, *calText;
+static uint32_t   clockHeldSince;
+
+// Wraps smartdisplay's read callback. While calibrating it collects the points
+// and tells LVGL the screen isn't touched, so nothing underneath reacts.
+static void touchRead(lv_indev_t *indev, lv_indev_data_t *data) {
+  touchReadCb(indev, data);
+  if (calStep < 0) return;
+  bool down = data->state == LV_INDEV_STATE_PRESSED;
+  data->state = LV_INDEV_STATE_RELEASED;
+  if (down) {
+    calLastTouch = millis();
+    if (calArmed && calCount < (int)(sizeof(calSamples) / sizeof(calSamples[0])))
+      calSamples[calCount++] = data->point;
+    return;
+  }
+  calArmed = true;
+  if (calCount == 0) return;
+  int keep = calCount - 2 * CAL_SKIP;
+  if (keep >= CAL_MIN_KEEP) {
+    int32_t sx = 0, sy = 0;
+    for (int i = CAL_SKIP; i < CAL_SKIP + keep; i++) {
+      sx += calSamples[i].x;
+      sy += calSamples[i].y;
+    }
+    calTap = { sx / keep, sy / keep };
+    calTapReady = true;
+  }
+  calCount = 0;
+}
+
+static void showCalTarget(const char *note = "") {
+  const lv_point_t &t = CAL_TARGETS[calStep];
+  lv_obj_set_pos(calCross, t.x - 20, t.y - 20);
+  char buf[96];
+  if (calStep < 3) snprintf(buf, sizeof(buf), "%sPress and hold the centre\nof the cross  (%d/3)", note, calStep + 1);
+  else             snprintf(buf, sizeof(buf), "%sPress the cross once more\nto check", note);
+  lv_label_set_text(calText, buf);
+}
+
+static void startTouchCalibration() {
+  if (calStep >= 0) return;
+  Serial.println("Touch calibration started");
+  calPrev = touch_calibration_data;
+  touch_calibration_data.valid = false;  // collect raw points
+  calStep = 0;
+  calArmed = false;
+  calCount = 0;
+  calTapReady = false;
+  calLastTouch = millis();
+  lv_obj_clear_flag(calLayer, LV_OBJ_FLAG_HIDDEN);
+  showCalTarget();
+}
+
+static void endTouchCalibration(bool keep) {
+  if (keep) {
+    prefs.putBytes("tcal", &touch_calibration_data, sizeof(touch_calibration_data));
+    Serial.printf("Touch calibration saved: x = %.4f*rx %+.4f*ry %+.1f, y = %.4f*rx %+.4f*ry %+.1f\n",
+                  touch_calibration_data.alphaX, touch_calibration_data.betaX, touch_calibration_data.deltaX,
+                  touch_calibration_data.alphaY, touch_calibration_data.betaY, touch_calibration_data.deltaY);
+  } else {
+    touch_calibration_data = calPrev;
+    Serial.println("Touch calibration abandoned, previous calibration kept");
+  }
+  calStep = -1;
+  lv_obj_add_flag(calLayer, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void updateTouchCalibration() {
+  if (calStep < 0) return;
+  if (millis() - calLastTouch > CAL_TIMEOUT_MS) {
+    endTouchCalibration(false);
+    return;
+  }
+  if (!calTapReady) return;
+  calTapReady = false;
+
+  if (calStep < 3) {
+    calRaw[calStep] = calTap;
+    Serial.printf("Cal point %d: target (%d,%d) raw (%d,%d)\n", calStep + 1,
+                  (int)CAL_TARGETS[calStep].x, (int)CAL_TARGETS[calStep].y, (int)calTap.x, (int)calTap.y);
+    if (++calStep == 3) {
+      lv_point_t screen[3];
+      for (int i = 0; i < 3; i++) screen[i] = { CAL_TARGETS[i].y, SCREEN_W - 1 - CAL_TARGETS[i].x };
+      touch_calibration_data_t fit = smartdisplay_compute_touch_calibration(screen, calRaw);
+      bool finite = isfinite(fit.alphaX) && isfinite(fit.betaX) && isfinite(fit.deltaX) &&
+                    isfinite(fit.alphaY) && isfinite(fit.betaY) && isfinite(fit.deltaY);
+      if (!finite) {  // two presses landed on the same raw point
+        calStep = 0;
+        showCalTarget("Those presses didn't register\nproperly. Again:\n");
+        return;
+      }
+      touch_calibration_data = fit;
+    }
+    showCalTarget();
+    return;
+  }
+
+  // verifying: calTap went through the new fit, so rotate it to landscape
+  const lv_point_t &t = CAL_TARGETS[3];
+  int lx = SCREEN_W - 1 - calTap.y, ly = calTap.x;
+  int err = max(abs(lx - t.x), abs(ly - t.y));
+  Serial.printf("Cal check: target (%d,%d) got (%d,%d), off by %d px\n", (int)t.x, (int)t.y, lx, ly, err);
+  if (err <= CAL_VERIFY_TOL) {
+    endTouchCalibration(true);
+    return;
+  }
+  touch_calibration_data.valid = false;
+  calStep = 0;
+  char note[48];
+  snprintf(note, sizeof(note), "That was %d px off. Again:\n", err);
+  showCalTarget(note);
+}
+
+static void onClockHold(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_PRESSED) clockHeldSince = millis();
+  else if (code == LV_EVENT_PRESSING && clockHeldSince && millis() - clockHeldSince >= CAL_HOLD_MS) {
+    clockHeldSince = 0;
+    startTouchCalibration();
+  }
+}
+
+static void buildCalibrationUi() {
+  // invisible hold target over the clock / IP / wifi area
+  lv_obj_t *hold = makeBox(lv_screen_active());
+  lv_obj_add_flag(hold, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_pos(hold, 280, 0);
+  lv_obj_set_size(hold, SCREEN_W - 280, 24);
+  lv_obj_add_event_cb(hold, onClockHold, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(hold, onClockHold, LV_EVENT_PRESSING, nullptr);
+
+  // on the top layer so it also covers the connecting overlay
+  calLayer = makeFilledBox(lv_layer_top(), COL_BG, 0);
+  lv_obj_set_size(calLayer, LV_PCT(100), LV_PCT(100));
+  calText = makeLabel(calLayer, &lv_font_montserrat_16, COL_TEXT, "");
+  lv_obj_set_style_text_align(calText, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(calText, LV_ALIGN_CENTER, 0, -20);
+
+  calCross = makeBox(calLayer);
+  lv_obj_set_size(calCross, 41, 41);
+  lv_obj_t *h = makeFilledBox(calCross, COL_TEXT, 0);
+  lv_obj_set_pos(h, 0, 20);
+  lv_obj_set_size(h, 41, 1);
+  lv_obj_t *v = makeFilledBox(calCross, COL_TEXT, 0);
+  lv_obj_set_pos(v, 20, 0);
+  lv_obj_set_size(v, 1, 41);
+  lv_obj_t *ring = makeBox(calCross);
+  lv_obj_set_pos(ring, 12, 12);
+  lv_obj_set_size(ring, 17, 17);
+  lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(ring, 2, 0);
+  lv_obj_set_style_border_color(ring, lv_color_hex(COL_FREE), 0);
+
+  lv_obj_add_flag(calLayer, LV_OBJ_FLAG_HIDDEN);
+}
+
+// "cal" on the serial port starts calibration (a fallback for when touch is too
+// far off to hold the clock).
+static void pollSerial() {
+  static char line[8];
+  static int len = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      line[len] = 0;
+      if (strcmp(line, "cal") == 0) startTouchCalibration();
+      len = 0;
+    } else if (len < (int)sizeof(line) - 1) {
+      line[len++] = c;
+    }
+  }
+}
+
 // ── app state machine (non-blocking so LVGL/touch stay responsive) ─────────
 enum AppState { ST_WIFI, ST_LOAD_CACHE, ST_SCAN, ST_WAIT_RETRY, ST_CONNECT, ST_POLL };
 static AppState state = ST_WIFI;
@@ -1210,17 +1418,27 @@ void setup() {
   // landscape, and the uncalibrated XPT2046 readings are 10-20px off on top of
   // that. Correct both on the raw (portrait) point before LVGL rotates it:
   // raw y runs the opposite way to landscape x, so mirroring x means flipping y.
-  // Fitted from taps on button centres (within 3px).
+  // From an on-screen 3-point calibration (3px off at the check point). Used
+  // until one has been saved to NVS (see "touch calibration").
   touch_calibration_data = {
     .valid = true,
-    .alphaX = 1.122f, .betaX = 0, .deltaX = -24,
-    .alphaY = 0, .betaY = -1.048f, .deltaY = 502,
+    .alphaX = 1.1148f, .betaX = -0.0107f, .deltaX = -19.5f,
+    .alphaY = 0.0206f, .betaY = -1.1100f, .deltaY = 502.0f,
   };
   lv_display_set_rotation(lv_display_get_default(), LV_DISPLAY_ROTATION_90);
   lvLastTick = millis();
   smartdisplay_lcd_set_brightness_cb(adaptiveBrightness, BL_INTERVAL_MS);
+  lv_indev_t *touch = lv_indev_get_next(nullptr);
+  touchReadCb = lv_indev_get_read_cb(touch);
+  lv_indev_set_read_cb(touch, touchRead);
   prefs.begin("sigmon", false);
+  touch_calibration_data_t savedCal;
+  if (prefs.getBytes("tcal", &savedCal, sizeof(savedCal)) == sizeof(savedCal) && savedCal.valid) {
+    touch_calibration_data = savedCal;
+    Serial.println("Using saved touch calibration");
+  }
   buildUi();
+  buildCalibrationUi();
   layoutTopBar();
   showOverlay("Connecting to WiFi\n\"" WIFI_SSID "\"...");
 
@@ -1250,6 +1468,8 @@ void loop() {
     updateClock();
   }
   updateCountdown();
+  updateTouchCalibration();
+  pollSerial();
 
   switch (state) {
     case ST_WIFI: {

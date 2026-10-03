@@ -7,7 +7,9 @@ All firmware is in [src/main.cpp](src/main.cpp), a single file.
 ## Hardware
 
 - **Sunton ESP32-3248S035R** ("Cheap Yellow Display"): 3.5" 480x320 landscape, ST7796 SPI LCD, **resistive** XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial.
-- **Touch calibration:** with the board definition as it is, touch comes out mirrored left-to-right in landscape, and readings are 10–20 px off on top of that. `setup()` fixes both by setting smartdisplay's `touch_calibration_data` right after `smartdisplay_init()`. The correction acts on the raw portrait point before LVGL rotates it, so landscape X is controlled by raw Y. To re-fit it, log each tap's raw point and compare it with the button centre you aimed at.
+- **Touch calibration:** with the board definition as it is, touch comes out mirrored left-to-right in landscape and is also off by up to ~20 px. smartdisplay's `touch_calibration_data` corrects both. The correction acts on the raw portrait point before LVGL rotates it, and LVGL maps portrait (px, py) to landscape (479 − py, px).
+  - **On-screen 3-point calibration:** hold the clock area (top right) for 5 s, or send `cal` over serial. Press and hold the centre of each of the 3 crosses; a 4th cross checks the fit (it has to land within 12 px). The result is saved in NVS (`tcal`) and loaded at boot. Serial logs each raw point and the final coefficients.
+  - The hardcoded values in `setup()` are only a fallback for when nothing has been saved yet. They came from one of these calibrations, so update them if the board's touch drifts.
 - **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness.
 - **Status LED:** the RGB LED is active-low and only switches on/off.
 - **Board definition:** [boards/esp32-3248S035R.json](boards/esp32-3248S035R.json) is pinned to the commit that matches `esp32_smartdisplay@2.1.1`. Upgrade the two together or not at all.
@@ -43,14 +45,15 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   `40046` Backup SOC (u16, %×10) backs the Charge button. `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued Charge write first, then the Backup SOC sync read (on connect and every 60 s), then the normal poll. [sigen.py](sigen.py) is the PC-side reference script for the same registers.
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, and `updateUi()`/`updateClock()` change it in place.
-  - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`) and the palette (`COL_*`) are at the top of the file.
+  - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`, `HERO_*`, `TILE_*`, `MODE_BTN_*`) and the palette (`COL_*`) are at the top of the file.
   - Icons are drawn from LVGL lines and boxes (`make*Icon`) rather than images.
   - **Top bar:** the clock is sized to its text and right-anchored. `layoutTopBar()` runs whenever the time changes and keeps the plant IP `IP_GAP` px to the clock's left, with the reconnect spinner centred in the gap.
   - **Off-peak:** from `OFFPEAK_START_HOUR` until `OFFPEAK_END_HOUR` (21:00–07:00, the cheaper overnight rate), `updateClock()` draws the hero number in `COL_OFFPEAK` grey. Nothing else changes colour.
   - A full-screen overlay covers the dashboard while connecting or scanning. Once data has arrived, a reconnect only shows a spinner, and the last readings stay on screen.
-- **Modes:** the home screen has two buttons between the big number and the mix bar.
+  - **Hero:** the icon tile sits in the top-left corner and the big number (`font_hero_144`) starts at the left edge under it.
+- **Modes:** the home screen has two icon-only buttons stacked in a column between the big number and the battery. Charge (thundercloud) is on top and Free hour (clock) is below it; together they span the battery's height.
   - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Pressed in writes Backup SOC 100% (sigen.py mode A), released writes 30% (mode B). Nothing is stored on the ESP: on every connect, and every 60 s after that (`CHARGE_SYNC_INTERVAL_MS`), the button is set from the plant's Backup SOC (pressed only if it's 100%), so changes made in the mySigen app show up. A read that was in flight when the button was tapped is discarded.
-  - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the big number. In this mode the big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. When it reaches zero, or the close button is tapped, the screen goes back to home.
+  - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the hero tile. In this mode the close button takes the top-left corner, with the hero tile and the "FREE HOUR" title to its right. The big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. The countdown runs in the mix bar's slot, extended across the hidden button column (`FREE_W`). When it reaches zero, or the close button is tapped, the screen goes back to home.
   - `updateUi()` checks `freeHour` to decide which values go where. The latest reading is kept in `last*Kw` so a mode switch redraws straight away.
   - **System hooks:** `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `ST_POLL`. `applyFreeHourMode()` is still a placeholder (`TODO(system)`): the UI calls it, but it doesn't send anything to the plant yet.
 
@@ -58,7 +61,7 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 
 The built-in Montserrat sizes are enabled in `lv_conf.h` (12/14/16/22/24/32/48). There are also two custom fonts that **contain only digits plus a few symbols**:
 
-- `font_hero_112`: `-./0-9`
+- `font_hero_144`: `-./0-9`
 - `font_num_44`: `%+-./0-9:` (the `:` is for the free-hour countdown)
 
 If you show any other character in them (for example `:` for a countdown), regenerate the font with that glyph added. Each generated `.c` file starts with an `Opts:` line holding the exact `lv_font_conv` command. Run it with `npx lv_font_conv …` from the repo root, adding the new code point to `-r`.
@@ -69,11 +72,12 @@ UI changes are mocked up as PNGs before any code is written. The scripts are in 
 
 - **`redesign.py`** is the shared drawing library: 4x supersampled canvas, palette, vector icons. It also holds the original A–D design concepts.
 - **`final.py`** and **`preview3.py`** render the dashboard with the Montserrat TTFs from `.pio/libdeps/.../lvgl@9.2.2`, so a `pio run` must have happened at least once.
-- **`modes.py`** renders the Charge button and Free-hour screen mockups at the current `buildUi()` coordinates. The implemented layout is "B": `modes-B-*` and `free-hour-B-*`.
+- **`stack.py`** renders the current layout at the `buildUi()` coordinates: icon-only buttons stacked beside a 108px battery. The implemented layout is "C" (`stack-C-bigger-*`) for the home screen and "C2" (`stack-C2-free-hour*`) for free hour. A, B and D are the alternatives that were rejected.
 
   ```sh
-  cd tools/mockups && python modes.py ../../mockups/modes
+  cd tools/mockups && python stack.py ../../mockups/stack
   ```
+- **`modes.py`** renders the previous layout, with labelled Charge/Free-hour buttons under the hero. `stack.py` reuses its widgets.
 - **`mock.py`** is the earliest prototype; it produced `ui-mockup*.png`.
 
 Output goes to [mockups/](mockups/) at 2x (960x640). When the firmware layout changes, update the coordinates in the scripts to match `buildUi()`. `preview3.py` predates the current layout: it still has the 150px battery and a labelled mix bar.
