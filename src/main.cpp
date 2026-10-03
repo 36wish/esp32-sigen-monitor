@@ -26,6 +26,14 @@ static const uint16_t MODBUS_PORT      = 502;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const size_t   MAX_MODBUS_BYTES = 128;   // supports up to 64 registers
 
+// Charge button: battery reserve (Backup SOC) on the plant, as in sigen.py
+// modes A (on) and B (off).
+static const uint16_t BACKUP_SOC_REG = 40046;  // RW U16, %*10 (Sigenergy V2.9)
+static const uint16_t CHARGE_ON_SOC  = 100;    // sigen.py mode A
+static const uint16_t CHARGE_OFF_SOC = 30;     // sigen.py mode B
+// Reread it this often so the button follows changes made elsewhere (mySigen app).
+static const uint32_t CHARGE_SYNC_INTERVAL_MS = 60000;
+
 // POSIX TZ string for the on-screen clock; override in secrets.h if needed.
 #ifndef TZ_INFO
 #define TZ_INFO "NZST-12NZDT,M9.5.0,M4.1.0/3"
@@ -139,11 +147,15 @@ static lv_obj_t *cdDigits[4];  // m m : s s, inside freeCountdown
 
 // ── modes ────────────────────────────────────────────────────────────────
 // Charge: toggle that holds the battery minimum at 100% (storm backup). Stays
-//   on until pressed again; remembered across reboots.
+//   on until pressed again. Pressed in = plant Backup SOC 100%, released = 30%;
+//   the button is set from the plant's Backup SOC on every connect and every 60s.
 // Free hour: the power company's free hour. The dashboard swaps grid import into
 //   the hero and house load into the strip, and counts down to the top of the
 //   hour, then returns home by itself (or via the close button).
 static bool     chargeOn = false;
+static int      pendingReserve = -1;    // Backup SOC % to write to the plant, -1 = none
+static bool     needChargeSync = true;  // read Backup SOC to set the Charge button
+static uint32_t lastChargeSyncAt = 0;   // ...and again every CHARGE_SYNC_INTERVAL_MS
 static bool     freeHour = false;
 static uint32_t freeHourEndMs = 0;
 static int      shownSecsLeft = -1;
@@ -226,54 +238,94 @@ static int32_t toS32(uint16_t hiWord, uint16_t loWord) {
   return (int32_t)combined;
 }
 
-// ── Modbus TCP (minimal client: MBAP header + read holding registers) ──────
-static bool modbusReadHoldingRegisters(WiFiClient &client, uint8_t slaveId,
-                                        uint16_t startAddr, uint16_t qty,
-                                        uint16_t *outRegs, uint32_t timeoutMs = 2000) {
-  if (qty * 2 > MAX_MODBUS_BYTES) return false;
+// ── Modbus TCP (minimal client: MBAP header + read/write registers) ────────
+// MB_EXCEPTION means the plant answered but refused the request; MB_FAIL means
+// no usable answer (timeout, dropped link, garbled reply).
+enum ModbusResult { MB_OK, MB_EXCEPTION, MB_FAIL };
 
+static bool waitForBytes(WiFiClient &client, int n, uint32_t start, uint32_t timeoutMs) {
+  while (client.connected() && client.available() < n && millis() - start < timeoutMs) waitTick();
+  return client.available() >= n;
+}
+
+// Sends one request PDU (function code + 4 bytes: address and quantity/value)
+// and reads the response header up to and including the function code.
+static ModbusResult modbusRequest(WiFiClient &client, uint8_t slaveId, uint8_t funcCode,
+                                  uint16_t addr, uint16_t arg, uint32_t start, uint32_t timeoutMs) {
   uint16_t txId = 1;
   uint8_t req[12] = {
     (uint8_t)(txId >> 8), (uint8_t)(txId & 0xFF),
     0, 0,                              // protocol id
     0, 6,                              // length: unitId + PDU
     slaveId,
-    0x03,                              // read holding registers
-    (uint8_t)(startAddr >> 8), (uint8_t)(startAddr & 0xFF),
-    (uint8_t)(qty >> 8), (uint8_t)(qty & 0xFF),
+    funcCode,
+    (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF),
+    (uint8_t)(arg >> 8), (uint8_t)(arg & 0xFF),
   };
   client.write(req, sizeof(req));
 
-  uint32_t start = millis();
-  while (client.connected() && client.available() < 8 && millis() - start < timeoutMs) waitTick();
-  if (client.available() < 8) return false;
-
+  if (!waitForBytes(client, 8, start, timeoutMs)) return MB_FAIL;
   uint8_t hdr[8];
   client.readBytes(hdr, 8);
-  if (hdr[0] != req[0] || hdr[1] != req[1]) return false; // stale/mismatched response
-  uint8_t funcCode = hdr[7];
+  if (hdr[0] != req[0] || hdr[1] != req[1]) return MB_FAIL; // stale/mismatched response
 
-  if (funcCode == (0x03 | 0x80)) {
-    while (client.connected() && client.available() < 1 && millis() - start < timeoutMs) waitTick();
-    if (client.available() >= 1) client.read(); // consume exception code
-    return false;
+  if (hdr[7] == (funcCode | 0x80)) {
+    if (waitForBytes(client, 1, start, timeoutMs)) client.read(); // consume exception code
+    return MB_EXCEPTION;
   }
-  if (funcCode != 0x03) return false;
+  return hdr[7] == funcCode ? MB_OK : MB_FAIL;
+}
 
-  while (client.connected() && client.available() < 1 && millis() - start < timeoutMs) waitTick();
-  if (client.available() < 1) return false;
+// FC 0x03 (holding) or 0x04 (input) registers.
+static ModbusResult modbusReadRegisters(WiFiClient &client, uint8_t slaveId, uint8_t funcCode,
+                                        uint16_t startAddr, uint16_t qty,
+                                        uint16_t *outRegs, uint32_t timeoutMs = 2000) {
+  if (qty * 2 > MAX_MODBUS_BYTES) return MB_FAIL;
+
+  uint32_t start = millis();
+  ModbusResult r = modbusRequest(client, slaveId, funcCode, startAddr, qty, start, timeoutMs);
+  if (r != MB_OK) return r;
+
+  if (!waitForBytes(client, 1, start, timeoutMs)) return MB_FAIL;
   uint8_t byteCount = client.read();
-  if (byteCount != qty * 2) return false;
-
-  while (client.connected() && client.available() < byteCount && millis() - start < timeoutMs) waitTick();
-  if (client.available() < byteCount) return false;
+  if (byteCount != qty * 2) return MB_FAIL;
+  if (!waitForBytes(client, byteCount, start, timeoutMs)) return MB_FAIL;
 
   uint8_t data[MAX_MODBUS_BYTES];
   client.readBytes(data, byteCount);
   for (uint16_t i = 0; i < qty; i++) {
     outRegs[i] = ((uint16_t)data[i * 2] << 8) | data[i * 2 + 1];
   }
-  return true;
+  return MB_OK;
+}
+
+static bool modbusReadHoldingRegisters(WiFiClient &client, uint8_t slaveId,
+                                        uint16_t startAddr, uint16_t qty,
+                                        uint16_t *outRegs, uint32_t timeoutMs = 2000) {
+  return modbusReadRegisters(client, slaveId, 0x03, startAddr, qty, outRegs, timeoutMs) == MB_OK;
+}
+
+// FC 0x06 write single register; the reply echoes address and value.
+static ModbusResult modbusWriteRegister(WiFiClient &client, uint8_t slaveId,
+                                        uint16_t addr, uint16_t value, uint32_t timeoutMs = 2000) {
+  uint32_t start = millis();
+  ModbusResult r = modbusRequest(client, slaveId, 0x06, addr, value, start, timeoutMs);
+  if (r != MB_OK) return r;
+
+  if (!waitForBytes(client, 4, start, timeoutMs)) return MB_FAIL;
+  uint8_t echo[4];
+  client.readBytes(echo, 4);
+  bool match = echo[0] == (addr >> 8) && echo[1] == (addr & 0xFF) &&
+               echo[2] == (value >> 8) && echo[3] == (value & 0xFF);
+  return match ? MB_OK : MB_FAIL;
+}
+
+// The spec lists 0x04 for RW registers but holding reads usually work too;
+// try 0x03 first and fall back, as sigen.py does.
+static ModbusResult readBackupSoc(WiFiClient &client, uint16_t &raw) {
+  ModbusResult r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x03, BACKUP_SOC_REG, 1, &raw);
+  if (r == MB_EXCEPTION) r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x04, BACKUP_SOC_REG, 1, &raw);
+  return r;
 }
 
 // ── autoscan ─────────────────────────────────────────────────────────────
@@ -1029,19 +1081,13 @@ static void updateClock() {
   lv_obj_set_style_text_color(heroValue, lv_color_hex(offPeak ? COL_OFFPEAK : COL_TEXT), 0);
 }
 
-// ── system hooks (placeholders) ──────────────────────────────────────────
-// The UI for both modes is complete; these are where the plant will be told.
+// ── system hooks ─────────────────────────────────────────────────────────
+// Where the plant gets told about a mode change.
 
-// Charge pressed in (on) or released (off). Not called when the saved state is
-// restored at boot, since the plant already holds that setting.
+// Charge pressed in (on) or released (off). Queues the Backup SOC write;
+// ST_POLL sends it on its next turn (or after reconnecting, if the link is down).
 static void applyChargeMode(bool on) {
-  if (on) {
-    // TODO(system): read the plant's current minimum battery SOC and save it
-    //   (in prefs too, so a reboot while Charge is on doesn't lose it), then
-    //   set the minimum SOC to 100% so the battery fills and stays full.
-  } else {
-    // TODO(system): write the saved minimum SOC back to the plant.
-  }
+  pendingReserve = on ? CHARGE_ON_SOC : CHARGE_OFF_SOC;
 }
 
 // Free hour started (on) or ended (off: close button or countdown reached 0).
@@ -1070,7 +1116,6 @@ static void showChargeOn(bool on) {
 static void onChargeToggled(lv_event_t *e) {
   bool on = lv_obj_has_state(chargeBtn, LV_STATE_CHECKED);
   showChargeOn(on);
-  prefs.putBool("charge", on);
   Serial.printf("Charge mode %s\n", on ? "on" : "off");
   applyChargeMode(on);
 }
@@ -1177,7 +1222,6 @@ void setup() {
   prefs.begin("sigmon", false);
   buildUi();
   layoutTopBar();
-  if (prefs.getBool("charge", false)) showChargeOn(true);  // the plant still has it set
   showOverlay("Connecting to WiFi\n\"" WIFI_SSID "\"...");
 
   Serial.printf("Connecting to WiFi \"%s\"...\n", WIFI_SSID);
@@ -1255,6 +1299,7 @@ void loop() {
       if (open && modbusClient.connect(sigenergyIp, MODBUS_PORT, 2000)) {
         connectFailures = 0;
         lv_label_set_text(ipLabel, sigenergyIp.toString().c_str());
+        needChargeSync = true;  // the reserve may have changed (e.g. in the mySigen app)
         nextActionAt = 0;
         state = ST_POLL;
       } else if (++connectFailures < CACHE_ATTEMPTS) {
@@ -1275,6 +1320,57 @@ void loop() {
 
     case ST_POLL: {
       if ((int32_t)(millis() - nextActionAt) < 0) break;
+
+      // One request per turn, so the plant always gets the 1s gap it asks for.
+      // A queued Charge write goes first, then the Backup SOC sync, then the poll.
+      if (pendingReserve >= 0) {
+        ModbusResult r = modbusWriteRegister(modbusClient, PLANT_SLAVE_ID, BACKUP_SOC_REG,
+                                             pendingReserve * 10);
+        if (r == MB_FAIL) {
+          Serial.println("Backup SOC write failed, reconnecting...");
+          modbusClient.stop();
+          state = ST_CONNECT;  // write stays queued
+          break;
+        }
+        if (r == MB_OK) {
+          Serial.printf("Backup SOC set to %d%%\n", pendingReserve);
+          needChargeSync = false;
+          lastChargeSyncAt = millis();  // the next periodic read confirms it stuck
+        } else {
+          Serial.printf("Plant refused Backup SOC %d%%\n", pendingReserve);
+          needChargeSync = true;  // put the button back to what the plant has
+        }
+        pendingReserve = -1;
+        nextActionAt = millis() + POLL_INTERVAL_MS;
+        break;
+      }
+
+      if (needChargeSync || millis() - lastChargeSyncAt >= CHARGE_SYNC_INTERVAL_MS) {
+        uint16_t socRaw;
+        ModbusResult r = readBackupSoc(modbusClient, socRaw);
+        if (r == MB_FAIL) {
+          Serial.println("Backup SOC read failed, reconnecting...");
+          modbusClient.stop();
+          state = ST_CONNECT;
+          break;
+        }
+        if (r != MB_OK) {
+          Serial.println("Plant refused Backup SOC read");
+        } else if (pendingReserve >= 0) {
+          // Charge was tapped while the read was out; this value predates the
+          // tap, and the queued write goes next.
+        } else {
+          bool on = socRaw >= CHARGE_ON_SOC * 10;
+          if (needChargeSync || on != chargeOn) {
+            Serial.printf("Plant Backup SOC: %.0f%% -> Charge %s\n", socRaw / 10.0f, on ? "on" : "off");
+          }
+          showChargeOn(on);
+        }
+        needChargeSync = false;
+        lastChargeSyncAt = millis();
+        nextActionAt = millis() + POLL_INTERVAL_MS;
+        break;
+      }
 
       uint16_t regs[REGISTER_COUNT];
       if (!modbusReadHoldingRegisters(modbusClient, PLANT_SLAVE_ID, START_ADDRESS, REGISTER_COUNT, regs)) {

@@ -33,12 +33,14 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 ## Firmware structure (src/main.cpp)
 
 - **App loop:** a non-blocking state machine in `loop()`, `ST_WIFI → ST_LOAD_CACHE → ST_SCAN → ST_CONNECT → ST_POLL`, with `ST_WAIT_RETRY` between failed attempts. Long operations call `waitTick()`/`pumpLvgl()` so touch and redraws stay responsive. Don't add blocking delays.
-- **Finding the plant:** first it tries the IP cached in NVS (`Preferences` namespace `sigmon`, opened in `setup()`; keys `ip` and `charge`). If that fails, it scans the /24 subnet in parallel for port 502 and checks each candidate with a Modbus read.
-- **Modbus client:** a minimal hand-written Modbus TCP client that only reads (FC 0x03, slave 247). Each poll reads registers 30005–30038 as one block:
+- **Finding the plant:** first it tries the IP cached in NVS (`Preferences` namespace `sigmon`, opened in `setup()`; key `ip`). If that fails, it scans the /24 subnet in parallel for port 502 and checks each candidate with a Modbus read.
+- **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (0x04 fallback for the Backup SOC read) and writes single registers with FC 0x06. Each poll reads registers 30005–30038 as one block:
   - `30005` grid power (s32; positive = import)
   - `30014` battery SOC
   - `30035` PV power (s32)
   - `30037` battery power (s32; positive = charging)
+
+  `40046` Backup SOC (u16, %×10) backs the Charge button. `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued Charge write first, then the Backup SOC sync read (on connect and every 60 s), then the normal poll. [sigen.py](sigen.py) is the PC-side reference script for the same registers.
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, and `updateUi()`/`updateClock()` change it in place.
   - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`) and the palette (`COL_*`) are at the top of the file.
@@ -47,10 +49,10 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   - **Off-peak:** from `OFFPEAK_START_HOUR` until `OFFPEAK_END_HOUR` (21:00–07:00, the cheaper overnight rate), `updateClock()` draws the hero number in `COL_OFFPEAK` grey. Nothing else changes colour.
   - A full-screen overlay covers the dashboard while connecting or scanning. Once data has arrived, a reconnect only shows a spinner, and the last readings stay on screen.
 - **Modes:** the home screen has two buttons between the big number and the mix bar.
-  - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Its state is saved in NVS, so it survives a reboot.
+  - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Pressed in writes Backup SOC 100% (sigen.py mode A), released writes 30% (mode B). Nothing is stored on the ESP: on every connect, and every 60 s after that (`CHARGE_SYNC_INTERVAL_MS`), the button is set from the plant's Backup SOC (pressed only if it's 100%), so changes made in the mySigen app show up. A read that was in flight when the button was tapped is discarded.
   - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the big number. In this mode the big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. When it reaches zero, or the close button is tapped, the screen goes back to home.
   - `updateUi()` checks `freeHour` to decide which values go where. The latest reading is kept in `last*Kw` so a mode switch redraws straight away.
-  - **System hooks:** `applyChargeMode()` and `applyFreeHourMode()` are placeholders (`TODO(system)`). The UI calls them, but they don't send anything to the plant yet. Sigenergy write support (Modbus FC 0x06/0x10) is still to come.
+  - **System hooks:** `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `ST_POLL`. `applyFreeHourMode()` is still a placeholder (`TODO(system)`): the UI calls it, but it doesn't send anything to the plant yet.
 
 ## Fonts
 
