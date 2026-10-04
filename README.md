@@ -1,6 +1,6 @@
-# espsolarmonitor
+# esp32-sigen-monitor
 
-A wall-mounted energy dashboard for a **Sigenergy** home battery and solar system, running on a 3.5" ESP32 touchscreen.
+A home energy dashboard for a **Sigenergy** home battery and solar system, running on a 3.5" ESP32 touchscreen.
 
 The display joins your WiFi, finds the Sigenergy system on your network by itself, and reads it over local Modbus TCP once a second. It needs no cloud account, app or Home Assistant.
 
