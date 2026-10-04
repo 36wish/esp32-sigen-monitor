@@ -70,6 +70,14 @@ static const uint16_t MODBUS_PORT      = 502;
 static const uint32_t POLL_INTERVAL_MS = 1000;
 static const size_t   MAX_MODBUS_BYTES = 128;   // supports up to 64 registers
 static const uint16_t BACKUP_SOC_REG   = 40046; // RW U16, %*10 (Sigenergy V2.9)
+// Free hour (remote EMS, Sigenergy V2.9 / Appendix 6)
+static const uint16_t REMOTE_EMS_ENABLE_REG = 40029;      // RW U16, 0 off (app's own mode) / 1 on
+static const uint16_t REMOTE_EMS_MODE_REG   = 40031;      // RW U16, used while remote EMS is on
+static const uint16_t EMS_MODE_GRID_CHARGE  = 3;          // command charging, grid power first
+static const uint16_t ESS_MAX_CHARGE_REG    = 40032;      // RW U32, kW*1000, applies in every mode
+static const uint32_t NO_CHARGE_LIMIT       = 0xFFFFFFFF; // factory default: no cap
+static const uint8_t  INVERTER_SLAVE_ID     = 1;          // first inverter
+static const uint16_t RATED_CHARGE_REG      = 30550;      // RO U32, kW*1000, on the inverter
 
 // Gap between the end of the plant IP and the start of the clock text; the
 // reconnect spinner (16px) sits centred in it.
@@ -182,9 +190,12 @@ static lv_obj_t *cdDigits[4];  // m m : s s, inside freeCountdown
 // Charge: toggle that holds the battery minimum at 100% (storm backup). Stays
 //   on until pressed again. Pressed in = plant Backup SOC 100%, released = 30%;
 //   the button is set from the plant's Backup SOC on every connect and every 60s.
-// Free hour: the power company's free hour. The dashboard swaps grid import into
-//   the hero and house load into the strip, and counts down to the top of the
-//   hour, then returns home by itself (or via the close button).
+// Free hour: the power company's free hour. The plant is switched to remote EMS
+//   "command charging, grid first" (charge cap removed), so the house and the
+//   battery run off the grid; at the end remote EMS is turned off and the
+//   mySigen app's own mode takes over again. The dashboard swaps grid import
+//   into the hero and house load into the strip, and counts down to the top of
+//   the hour, then returns home by itself (or via the close button).
 static bool     chargeOn = false;
 static int      pendingReserve = -1;    // Backup SOC % to write to the plant, -1 = none
 static bool     needChargeSync = true;  // read Backup SOC to set the Charge button
@@ -192,6 +203,12 @@ static uint32_t lastChargeSyncAt = 0;   // ...and again every CHARGE_SYNC_INTERV
 static bool     freeHour = false;
 static uint32_t freeHourEndMs = 0;
 static int      shownSecsLeft = -1;
+
+// Free-hour plant writes, one request per ST_POLL turn (see emsTurn()).
+enum EmsStep { EMS_IDLE, EMS_READ_CAP, EMS_UNCAP, EMS_READ_RATED, EMS_SET_RATED,
+               EMS_ENABLE, EMS_SET_MODE, EMS_RELEASE };
+static EmsStep  emsStep = EMS_IDLE;
+static uint32_t ratedChargeRaw = 0;     // kW*1000, fallback charge cap if "no limit" is refused
 
 // last plant reading, so a mode switch can redraw without waiting for a poll
 static float lastGridKw, lastSocPct, lastPvKw, lastEssKw;
@@ -261,9 +278,12 @@ static void waitTick() {
   delay(1);
 }
 
+static uint32_t toU32(uint16_t hiWord, uint16_t loWord) {
+  return ((uint32_t)hiWord << 16) | loWord;
+}
+
 static int32_t toS32(uint16_t hiWord, uint16_t loWord) {
-  uint32_t combined = ((uint32_t)hiWord << 16) | loWord;
-  return (int32_t)combined;
+  return (int32_t)toU32(hiWord, loWord);
 }
 
 // ── Modbus TCP (minimal client: MBAP header + read/write registers) ────────
@@ -276,21 +296,26 @@ static bool waitForBytes(WiFiClient &client, int n, uint32_t start, uint32_t tim
   return client.available() >= n;
 }
 
-// Sends one request PDU (function code + 4 bytes: address and quantity/value)
-// and reads the response header up to and including the function code.
+// Sends one request PDU (function code + 4 bytes: address and quantity/value,
+// then any extra bytes, e.g. FC 0x10's byte count and data) and reads the
+// response header up to and including the function code.
+static const uint8_t MAX_EXTRA_BYTES = 5;
 static ModbusResult modbusRequest(WiFiClient &client, uint8_t slaveId, uint8_t funcCode,
-                                  uint16_t addr, uint16_t arg, uint32_t start, uint32_t timeoutMs) {
+                                  uint16_t addr, uint16_t arg, uint32_t start, uint32_t timeoutMs,
+                                  const uint8_t *extra = nullptr, uint8_t extraLen = 0) {
+  if (extraLen > MAX_EXTRA_BYTES) return MB_FAIL;
   uint16_t txId = 1;
-  uint8_t req[12] = {
+  uint8_t req[12 + MAX_EXTRA_BYTES] = {
     (uint8_t)(txId >> 8), (uint8_t)(txId & 0xFF),
     0, 0,                              // protocol id
-    0, 6,                              // length: unitId + PDU
+    0, (uint8_t)(6 + extraLen),        // length: unitId + PDU
     slaveId,
     funcCode,
     (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF),
     (uint8_t)(arg >> 8), (uint8_t)(arg & 0xFF),
   };
-  client.write(req, sizeof(req));
+  if (extraLen) memcpy(req + 12, extra, extraLen);
+  client.write(req, 12 + extraLen);
 
   if (!waitForBytes(client, 8, start, timeoutMs)) return MB_FAIL;
   uint8_t hdr[8];
@@ -333,27 +358,50 @@ static bool modbusReadHoldingRegisters(WiFiClient &client, uint8_t slaveId,
   return modbusReadRegisters(client, slaveId, 0x03, startAddr, qty, outRegs, timeoutMs) == MB_OK;
 }
 
+// Reads the 4 bytes a write reply ends with (address + value for FC 0x06,
+// address + register count for FC 0x10) and checks they match the request.
+static ModbusResult readWriteEcho(WiFiClient &client, uint16_t addr, uint16_t arg,
+                                  uint32_t start, uint32_t timeoutMs) {
+  if (!waitForBytes(client, 4, start, timeoutMs)) return MB_FAIL;
+  uint8_t echo[4];
+  client.readBytes(echo, 4);
+  bool match = echo[0] == (addr >> 8) && echo[1] == (addr & 0xFF) &&
+               echo[2] == (arg >> 8) && echo[3] == (arg & 0xFF);
+  return match ? MB_OK : MB_FAIL;
+}
+
 // FC 0x06 write single register; the reply echoes address and value.
 static ModbusResult modbusWriteRegister(WiFiClient &client, uint8_t slaveId,
                                         uint16_t addr, uint16_t value, uint32_t timeoutMs = 2000) {
   uint32_t start = millis();
   ModbusResult r = modbusRequest(client, slaveId, 0x06, addr, value, start, timeoutMs);
   if (r != MB_OK) return r;
-
-  if (!waitForBytes(client, 4, start, timeoutMs)) return MB_FAIL;
-  uint8_t echo[4];
-  client.readBytes(echo, 4);
-  bool match = echo[0] == (addr >> 8) && echo[1] == (addr & 0xFF) &&
-               echo[2] == (value >> 8) && echo[3] == (value & 0xFF);
-  return match ? MB_OK : MB_FAIL;
+  return readWriteEcho(client, addr, value, start, timeoutMs);
 }
 
-// The spec lists 0x04 for RW registers but holding reads usually work too;
-// try 0x03 first and fall back.
-static ModbusResult readBackupSoc(WiFiClient &client, uint16_t &raw) {
-  ModbusResult r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x03, BACKUP_SOC_REG, 1, &raw);
-  if (r == MB_EXCEPTION) r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x04, BACKUP_SOC_REG, 1, &raw);
+// FC 0x10 write a U32 (two registers, high word first); the reply echoes
+// address and register count.
+static ModbusResult modbusWriteU32(WiFiClient &client, uint8_t slaveId,
+                                   uint16_t addr, uint32_t value, uint32_t timeoutMs = 2000) {
+  uint8_t data[5] = { 4,  // byte count
+                      (uint8_t)(value >> 24), (uint8_t)(value >> 16),
+                      (uint8_t)(value >> 8), (uint8_t)value };
+  uint32_t start = millis();
+  ModbusResult r = modbusRequest(client, slaveId, 0x10, addr, 2, start, timeoutMs, data, sizeof(data));
+  if (r != MB_OK) return r;
+  return readWriteEcho(client, addr, 2, start, timeoutMs);
+}
+
+// Plant RW registers. The spec lists 0x04 for them but holding reads usually
+// work too; try 0x03 first and fall back.
+static ModbusResult readPlantRegs(WiFiClient &client, uint16_t addr, uint16_t qty, uint16_t *out) {
+  ModbusResult r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x03, addr, qty, out);
+  if (r == MB_EXCEPTION) r = modbusReadRegisters(client, PLANT_SLAVE_ID, 0x04, addr, qty, out);
   return r;
+}
+
+static ModbusResult readBackupSoc(WiFiClient &client, uint16_t &raw) {
+  return readPlantRegs(client, BACKUP_SOC_REG, 1, &raw);
 }
 
 // ── autoscan ─────────────────────────────────────────────────────────────
@@ -1121,12 +1169,108 @@ static void applyChargeMode(bool on) {
 }
 
 // Free hour started (on) or ended (off: close button or countdown reached 0).
+// Queues the remote EMS steps for ST_POLL; a later call replaces whatever is
+// still queued. NVS key "fhems" stays set until remote EMS is handed back, so
+// a reboot mid free hour still releases it.
 static void applyFreeHourMode(bool on) {
   if (on) {
-    // TODO(system): free hour started.
+    prefs.putBool("fhems", true);
+    emsStep = EMS_READ_CAP;
   } else {
-    // TODO(system): free hour ended.
+    emsStep = EMS_RELEASE;
   }
+}
+
+// Sends the next free-hour request and moves emsStep on. On MB_FAIL the step
+// stays queued and the caller reconnects. A charge cap that can't be lifted
+// is logged and skipped, it never holds up the mode switch.
+static ModbusResult emsTurn() {
+  uint16_t regs[2];
+  ModbusResult r = MB_OK;
+  switch (emsStep) {
+    case EMS_IDLE:
+      break;
+
+    case EMS_READ_CAP:
+      r = readPlantRegs(modbusClient, ESS_MAX_CHARGE_REG, 2, regs);
+      if (r == MB_FAIL) break;
+      if (r != MB_OK) {
+        Serial.println("Plant refused charge cap read, leaving it");
+        emsStep = EMS_ENABLE;
+      } else if (toU32(regs[0], regs[1]) == NO_CHARGE_LIMIT) {
+        emsStep = EMS_ENABLE;
+      } else {
+        Serial.printf("Charge cap is %.2f kW, removing it\n", toU32(regs[0], regs[1]) / 1000.0f);
+        emsStep = EMS_UNCAP;
+      }
+      break;
+
+    case EMS_UNCAP:
+      r = modbusWriteU32(modbusClient, PLANT_SLAVE_ID, ESS_MAX_CHARGE_REG, NO_CHARGE_LIMIT);
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) Serial.println("Charge cap removed");
+      emsStep = r == MB_OK ? EMS_ENABLE : EMS_READ_RATED;  // refused: cap at the rated power instead
+      break;
+
+    case EMS_READ_RATED:
+      r = modbusReadRegisters(modbusClient, INVERTER_SLAVE_ID, 0x04, RATED_CHARGE_REG, 2, regs);
+      if (r == MB_FAIL) break;
+      ratedChargeRaw = r == MB_OK ? toU32(regs[0], regs[1]) : 0;
+      if (ratedChargeRaw > 0) {
+        emsStep = EMS_SET_RATED;
+      } else {
+        Serial.println("Couldn't read rated charge power, charge cap left in place");
+        emsStep = EMS_ENABLE;
+      }
+      break;
+
+    case EMS_SET_RATED:
+      r = modbusWriteU32(modbusClient, PLANT_SLAVE_ID, ESS_MAX_CHARGE_REG, ratedChargeRaw);
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) Serial.printf("Charge cap set to rated %.2f kW\n", ratedChargeRaw / 1000.0f);
+      else            Serial.println("Plant refused rated charge cap, left in place");
+      emsStep = EMS_ENABLE;
+      break;
+
+    case EMS_ENABLE:
+      r = modbusWriteRegister(modbusClient, PLANT_SLAVE_ID, REMOTE_EMS_ENABLE_REG, 1);
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) {
+        Serial.println("Remote EMS enabled");
+        emsStep = EMS_SET_MODE;
+      } else {
+        Serial.println("Plant refused remote EMS enable");
+        prefs.putBool("fhems", false);  // nothing to hand back
+        emsStep = EMS_IDLE;
+      }
+      break;
+
+    case EMS_SET_MODE:
+      r = modbusWriteRegister(modbusClient, PLANT_SLAVE_ID, REMOTE_EMS_MODE_REG, EMS_MODE_GRID_CHARGE);
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) {
+        Serial.println("Remote EMS: charging from grid");
+        emsStep = EMS_IDLE;
+      } else {
+        // don't leave remote EMS on in whatever mode it had
+        Serial.println("Plant refused grid charge mode, releasing remote EMS");
+        emsStep = EMS_RELEASE;
+      }
+      break;
+
+    case EMS_RELEASE:
+      r = modbusWriteRegister(modbusClient, PLANT_SLAVE_ID, REMOTE_EMS_ENABLE_REG, 0);
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) {
+        Serial.println("Remote EMS off, plant back on its own mode");
+        prefs.putBool("fhems", false);
+      } else {
+        Serial.println("Plant refused remote EMS release (retried next boot)");
+      }
+      emsStep = EMS_IDLE;
+      break;
+  }
+  return r;
 }
 
 // ── mode UI ──────────────────────────────────────────────────────────────
@@ -1445,6 +1589,11 @@ void setup() {
     touch_calibration_data = savedCal;
     Serial.println("Using saved touch calibration");
   }
+  if (prefs.getBool("fhems", false)) {
+    // a free hour was running when the ESP last stopped; hand control back to the app
+    Serial.println("Free hour was left on, releasing remote EMS once connected");
+    emsStep = EMS_RELEASE;
+  }
   buildUi();
   buildCalibrationUi();
   layoutTopBar();
@@ -1550,7 +1699,19 @@ void loop() {
       if ((int32_t)(millis() - nextActionAt) < 0) break;
 
       // One request per turn, so the plant always gets the 1s gap it asks for.
-      // A queued Charge write goes first, then the Backup SOC sync, then the poll.
+      // A queued free-hour step goes first, then a queued Charge write, then
+      // the Backup SOC sync, then the poll.
+      if (emsStep != EMS_IDLE) {
+        if (emsTurn() == MB_FAIL) {
+          Serial.println("Free hour request failed, reconnecting...");
+          modbusClient.stop();
+          state = ST_CONNECT;  // step stays queued
+          break;
+        }
+        nextActionAt = millis() + POLL_INTERVAL_MS;
+        break;
+      }
+
       if (pendingReserve >= 0) {
         ModbusResult r = modbusWriteRegister(modbusClient, PLANT_SLAVE_ID, BACKUP_SOC_REG,
                                              pendingReserve * 10);

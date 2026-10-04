@@ -36,13 +36,13 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 
 - **App loop:** a non-blocking state machine in `loop()`, `ST_WIFI → ST_LOAD_CACHE → ST_SCAN → ST_CONNECT → ST_POLL`, with `ST_WAIT_RETRY` between failed attempts. Long operations call `waitTick()`/`pumpLvgl()` so touch and redraws stay responsive. Don't add blocking delays.
 - **Finding the plant:** first it tries the IP cached in NVS (`Preferences` namespace `sigmon`, opened in `setup()`; key `ip`). If that fails, it scans the /24 subnet in parallel for port 502 and checks each candidate with a Modbus read.
-- **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (0x04 fallback for the Backup SOC read) and writes single registers with FC 0x06. Each poll reads registers 30005–30038 as one block:
+- **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (`readPlantRegs()` falls back to 0x04 for the plant's RW registers), writes single registers with FC 0x06, and writes U32s with FC 0x10 (`modbusWriteU32()`, high word first). Each poll reads registers 30005–30038 as one block:
   - `30005` grid power (s32; positive = import)
   - `30014` battery SOC
   - `30035` PV power (s32)
   - `30037` battery power (s32; positive = charging)
 
-  `40046` Backup SOC (u16, %×10) backs the Charge button. `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued Charge write first, then the Backup SOC sync read (on connect and every 60 s), then the normal poll.
+  `40046` Backup SOC (u16, %×10) backs the Charge button. Free hour uses `40029` remote EMS enable, `40031` remote EMS mode and `40032` ESS max charging limit (u32, kW×1000). `ST_POLL` sends one request per turn (the plant wants ≥1 s between requests): a queued free-hour step first, then a queued Charge write, then the Backup SOC sync read (on connect and every 60 s), then the normal poll.
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, and `updateUi()`/`updateClock()` change it in place.
   - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`, `HERO_*`, `TILE_*`, `MODE_BTN_*`) and the palette (`COL_*`) are at the top of the file.
@@ -55,7 +55,11 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   - **Charge** is a toggle that stays pressed in until it's pressed again. It's meant to hold the battery minimum at 100% before a storm. Pressed in writes Backup SOC 100% (`CHARGE_ON_SOC`), released writes 30% (`CHARGE_OFF_SOC`). Nothing is stored on the ESP: on every connect, and every 60 s after that (`CHARGE_SYNC_INTERVAL_MS`), the button is set from the plant's Backup SOC (pressed only if it's 100%), so changes made in the mySigen app show up. A read that was in flight when the button was tapped is discarded.
   - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the hero tile. In this mode the close button takes the top-left corner, with the hero tile and the "FREE HOUR" title to its right. The big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. The countdown runs in the mix bar's slot, extended across the hidden button column (`FREE_W`). When it reaches zero, or the close button is tapped, the screen goes back to home.
   - `updateUi()` checks `freeHour` to decide which values go where. The latest reading is kept in `last*Kw` so a mode switch redraws straight away.
-  - **System hooks:** `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `ST_POLL`. `applyFreeHourMode()` is still a placeholder (`TODO(system)`): the UI calls it, but it doesn't send anything to the plant yet.
+  - **System hooks:** `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `ST_POLL`. `applyFreeHourMode()` queues the free-hour steps (`emsStep`), which `emsTurn()` sends one per `ST_POLL` turn:
+    - **Start:** read `40032`. If it isn't `0xFFFFFFFF` (no limit), write `0xFFFFFFFF`. If the plant refuses that, write the rated charge power read from `30550` on inverter slave 1 instead. Then write `40029=1` and `40031=3` (command charging, grid first). A cap step that fails is logged and skipped. If the mode write is refused, remote EMS is released again.
+    - **End:** write `40029=0`, so the mySigen app's own mode (max self-consumption) takes over. The charge cap isn't restored.
+    - A later call replaces whatever is still queued. A dropped link keeps the step queued until the reconnect.
+    - NVS key `fhems` is set when free hour starts and cleared once remote EMS is handed back. If it's still set at boot (the ESP rebooted mid free hour), `setup()` queues the release. The protocol has no remote-EMS timeout, so this is the only thing that hands control back.
 
 ## Fonts
 
