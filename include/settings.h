@@ -19,6 +19,10 @@ static const uint16_t CHARGE_OFF_SOC = 30;
 // Reread it this often so the button follows changes made elsewhere (mySigen app).
 static const uint32_t CHARGE_SYNC_INTERVAL_MS = 60000;
 
+// Free hour: how hard the inverter charges the battery from the grid, as % of
+// its rated power (100 = full rate). The house runs off the grid either way.
+static const int FREE_HOUR_CHARGE_PCT = 100;
+
 // Full-scale value for the solar / grid / battery bars in the bottom strip.
 static const float BAR_MAX_KW = 8.0f;
 

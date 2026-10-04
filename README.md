@@ -24,7 +24,7 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
   ![Home screen with the Charge button pressed in and the battery at 100%](img/home-charge-on.png)
 
   *Charge on: the button stays pressed in and the battery reserve is held at 100%.*
-- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated it switches the system to draw maximum power from the grid. It will countdown to the start of the next hour, and then automatically switces back to normal. The big number on screen switches to grid import.
+- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. The battery never discharges during the free hour. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import.
 
   ![Free hour screen showing grid import, a countdown to the top of the hour and the battery charging](img/free-hour.png)
 
@@ -100,6 +100,7 @@ All settings are in [include/settings.h](include/settings.h). The only exception
 | `OFFPEAK_START_HOUR`, `OFFPEAK_END_HOUR` | 21, 7 | When the big number is shaded grey for the off-peak rate |
 | `CHARGE_ON_SOC`, `CHARGE_OFF_SOC` | 100, 30 | Backup reserve (%) the Charge button sets when pressed in and when released |
 | `CHARGE_SYNC_INTERVAL_MS` | 60000 | How often the Charge button rereads the reserve from the system |
+| `FREE_HOUR_CHARGE_PCT` | 100 | How hard the battery charges from the grid during a free hour, as % of the inverter's rated power |
 | `BAR_MAX_KW` | 8.0 | Full-scale value for the solar/grid/battery bars |
 | `CDS_BRIGHT_RAW`, `CDS_DARK_RAW` | 30, 400 | Light-sensor thresholds for auto-brightness. The serial log prints the raw reading every 10 s to help you tune them for your room. |
 | `BL_MIN`, `BL_MAX` | 0.08, 1.0 | Dimmest and brightest backlight levels |
@@ -131,6 +132,20 @@ The Charge button uses one more register, outside that block:
 | 40046 | Backup SOC (read/write) | u16, %×10. Written when Charge is tapped. Read on connect and every 60 s after that, so the button follows changes made in the mySigen app. |
 
 The system asks for at least one second between requests, so the firmware sends one request at a time. When a Charge write or Backup SOC read is due, it takes the place of that second's poll.
+
+### Free hour
+
+Free hour uses the system's remote EMS control (Appendix 6 of the Sigenergy Modbus Protocol V2.9):
+
+| Register | Value | Notes |
+|---|---|---|
+| 40029 | Remote EMS enable | u16, 1 = on, 0 = off (the mySigen app's own mode) |
+| 40031 | Remote EMS mode | u16, set to 0, "PCS remote control" |
+| 40005 | Active power percentage | s16, %×100 of the inverter's rated power; negative = take power from the grid (charge) |
+
+To start, it writes 40029 = 1, then 40031 = 0, then 40005 = −`FREE_HOUR_CHARGE_PCT`×100. To end, it writes 40005 = 0, then 40029 = 0. If the system refuses to turn remote EMS off, the screen shows "STILL GRID CHARGING" and the release is retried every 60 seconds. If the ESP reboots during a free hour, it releases remote EMS as soon as it reconnects. The protocol has no timeout of its own.
+
+
 
 
 ## Project layout

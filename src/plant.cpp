@@ -22,17 +22,19 @@ static bool     needChargeSync = true;  // read Backup SOC to set the Charge but
 static uint32_t lastChargeSyncAt = 0;   // ...and again every CHARGE_SYNC_INTERVAL_MS
 
 // ── Free hour ────────────────────────────────────────────────────────────
-// The power company's free hour. The plant is switched to remote EMS "command
-// charging, grid first" (charge cap removed), so the house and the battery run
-// off the grid; at the end remote EMS is turned off and the mySigen app's own
-// mode takes over again. NVS_FREE_HOUR stays set until remote EMS is handed
-// back, so a reboot mid free hour still releases it: the protocol has no
-// remote-EMS timeout. For the same reason a release the plant refuses is sent
-// again every EMS_RELEASE_RETRY_MS, not left for a reboot that may be months away.
-enum EmsStep { EMS_IDLE, EMS_READ_CAP, EMS_UNCAP, EMS_READ_RATED, EMS_SET_RATED,
-               EMS_ENABLE, EMS_SET_MODE, EMS_RELEASE };
+// The power company's free hour. Remote EMS is switched to "PCS remote
+// control" with the inverter set to take FREE_HOUR_CHARGE_PCT of its rated
+// power from the AC side, so the battery charges at a fixed rate and can't
+// discharge: the house runs off the grid alone. ("Command charging, grid
+// first" holds grid import at a fixed ~4 kW and lets the battery cover the
+// house above that.) At the end the setpoint is zeroed and remote EMS turned
+// off, so the mySigen app's own mode takes over again. NVS_FREE_HOUR stays set
+// until remote EMS is handed back, so a reboot mid free hour still releases
+// it: the protocol has no remote-EMS timeout. For the same reason a release
+// the plant refuses is sent again every EMS_RELEASE_RETRY_MS, not left for a
+// reboot that may be months away.
+enum EmsStep { EMS_IDLE, EMS_ENABLE, EMS_SET_MODE, EMS_SET_POWER, EMS_ZERO_POWER, EMS_RELEASE };
 static EmsStep  emsStep = EMS_IDLE;
-static uint32_t ratedChargeRaw = 0;     // kW*1000, fallback charge cap if "no limit" is refused
 static const uint32_t EMS_RELEASE_RETRY_MS = 60000;
 static bool     retryRelease = false;   // the plant refused the release; queue it again...
 static uint32_t releaseRefusedAt = 0;   // ...EMS_RELEASE_RETRY_MS after this
@@ -41,7 +43,7 @@ void plantBegin() {
   if (prefs.getBool(NVS_FREE_HOUR, false)) {
     // a free hour was running when the ESP last stopped; hand control back to the app
     Serial.println("Free hour was left on, releasing remote EMS once connected");
-    emsStep = EMS_RELEASE;
+    emsStep = EMS_ZERO_POWER;
   }
 }
 
@@ -62,9 +64,9 @@ void applyFreeHourMode(bool on) {
   retryRelease = false;  // what this queues replaces a release waiting to be retried
   if (on) {
     prefs.putBool(NVS_FREE_HOUR, true);
-    emsStep = EMS_READ_CAP;
+    emsStep = EMS_ENABLE;
   } else {
-    emsStep = EMS_RELEASE;
+    emsStep = EMS_ZERO_POWER;
   }
 }
 
@@ -77,13 +79,13 @@ static ModbusResult readPlantRegs(uint16_t addr, uint16_t qty, uint16_t *out) {
 }
 
 // Sends the next free-hour request and moves emsStep on. On MB_FAIL the step
-// stays queued for after the reconnect. A charge cap that can't be lifted is
-// logged and skipped, it never holds up the mode switch.
-//   start:  read the cap; if there is one, lift it (or, if the plant refuses
-//           "no limit", raise it to the inverter's rated charge power); then
-//           enable remote EMS in grid-charge mode
-//   end:    disable remote EMS (the charge cap isn't restored); if the plant
-//           refuses, try again every EMS_RELEASE_RETRY_MS
+// stays queued for after the reconnect. The plant refuses the power setpoint
+// until remote EMS is on, hence the order.
+//   start:  enable remote EMS, switch it to PCS remote control, then set the
+//           charge setpoint (anything refused after the enable releases it)
+//   end:    zero the setpoint (while remote EMS still takes it), then disable
+//           remote EMS; if the plant refuses that, try again every
+//           EMS_RELEASE_RETRY_MS
 // The request keeps LVGL running while it waits, so free hour can be opened or
 // closed meanwhile; the step that queues wins over this one's next step.
 static ModbusResult emsTurn() {
@@ -91,51 +93,9 @@ static ModbusResult emsTurn() {
   EmsStep next = step;
   bool nothingToHandBack = false;  // clear NVS_FREE_HOUR
   bool releaseRefused = false;     // send EMS_RELEASE again later
-  uint16_t regs[2];
   ModbusResult r = MB_OK;
   switch (step) {
     case EMS_IDLE:
-      break;
-
-    case EMS_READ_CAP:
-      r = readPlantRegs(ESS_MAX_CHARGE_REG, 2, regs);
-      if (r == MB_FAIL) break;
-      if (r != MB_OK) {
-        Serial.println("Plant refused charge cap read, leaving it");
-        next = EMS_ENABLE;
-      } else if (toU32(regs) == NO_CHARGE_LIMIT) {
-        next = EMS_ENABLE;
-      } else {
-        Serial.printf("Charge cap is %.2f kW, removing it\n", toU32(regs) / 1000.0f);
-        next = EMS_UNCAP;
-      }
-      break;
-
-    case EMS_UNCAP:
-      r = modbusWriteU32(client, PLANT_SLAVE_ID, ESS_MAX_CHARGE_REG, NO_CHARGE_LIMIT);
-      if (r == MB_FAIL) break;
-      if (r == MB_OK) Serial.println("Charge cap removed");
-      next = r == MB_OK ? EMS_ENABLE : EMS_READ_RATED;  // refused: cap at the rated power instead
-      break;
-
-    case EMS_READ_RATED:
-      r = modbusReadRegisters(client, INVERTER_SLAVE_ID, FC_READ_INPUT, RATED_CHARGE_REG, 2, regs);
-      if (r == MB_FAIL) break;
-      ratedChargeRaw = r == MB_OK ? toU32(regs) : 0;
-      if (ratedChargeRaw > 0) {
-        next = EMS_SET_RATED;
-      } else {
-        Serial.println("Couldn't read rated charge power, charge cap left in place");
-        next = EMS_ENABLE;
-      }
-      break;
-
-    case EMS_SET_RATED:
-      r = modbusWriteU32(client, PLANT_SLAVE_ID, ESS_MAX_CHARGE_REG, ratedChargeRaw);
-      if (r == MB_FAIL) break;
-      if (r == MB_OK) Serial.printf("Charge cap set to rated %.2f kW\n", ratedChargeRaw / 1000.0f);
-      else            Serial.println("Plant refused rated charge cap, left in place");
-      next = EMS_ENABLE;
       break;
 
     case EMS_ENABLE:
@@ -152,16 +112,36 @@ static ModbusResult emsTurn() {
       break;
 
     case EMS_SET_MODE:
-      r = modbusWriteRegister(client, PLANT_SLAVE_ID, REMOTE_EMS_MODE_REG, EMS_MODE_GRID_CHARGE);
+      r = modbusWriteRegister(client, PLANT_SLAVE_ID, REMOTE_EMS_MODE_REG, EMS_MODE_PCS);
       if (r == MB_FAIL) break;
       if (r == MB_OK) {
-        Serial.println("Remote EMS: charging from grid");
-        next = EMS_IDLE;
+        next = EMS_SET_POWER;
       } else {
         // don't leave remote EMS on in whatever mode it had
-        Serial.println("Plant refused grid charge mode, releasing remote EMS");
+        Serial.println("Plant refused PCS remote control, releasing remote EMS");
         next = EMS_RELEASE;
       }
+      break;
+
+    case EMS_SET_POWER:
+      r = modbusWriteRegister(client, PLANT_SLAVE_ID, ACTIVE_POWER_PCT_REG,
+                              (uint16_t)(int16_t)(-FREE_HOUR_CHARGE_PCT * 100));
+      if (r == MB_FAIL) break;
+      if (r == MB_OK) {
+        Serial.printf("Remote EMS: charging at %d%% from grid, house on grid\n", FREE_HOUR_CHARGE_PCT);
+        next = EMS_IDLE;
+      } else {
+        Serial.println("Plant refused charge setpoint, releasing remote EMS");
+        next = EMS_RELEASE;
+      }
+      break;
+
+    case EMS_ZERO_POWER:
+      // tidy only: the setpoint does nothing once remote EMS is off
+      r = modbusWriteRegister(client, PLANT_SLAVE_ID, ACTIVE_POWER_PCT_REG, 0);
+      if (r == MB_FAIL) break;
+      if (r != MB_OK) Serial.println("Plant refused zeroing the charge setpoint");
+      next = EMS_RELEASE;
       break;
 
     case EMS_RELEASE:

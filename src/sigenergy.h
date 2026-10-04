@@ -23,10 +23,9 @@ static const uint16_t LIVE_BLOCK_COUNT = ESS_POWER_REG + 2 - LIVE_BLOCK_START;  
 // Charge button
 static const uint16_t BACKUP_SOC_REG = 40046;  // RW U16, %*10
 
-// Free hour (remote EMS, Appendix 6)
-static const uint16_t REMOTE_EMS_ENABLE_REG = 40029;      // RW U16, 0 off (app's own mode) / 1 on
-static const uint16_t REMOTE_EMS_MODE_REG   = 40031;      // RW U16, used while remote EMS is on
-static const uint16_t EMS_MODE_GRID_CHARGE  = 3;          // command charging, grid power first
-static const uint16_t ESS_MAX_CHARGE_REG    = 40032;      // RW U32, kW*1000, applies in every mode
-static const uint32_t NO_CHARGE_LIMIT       = 0xFFFFFFFF; // factory default: no cap
-static const uint16_t RATED_CHARGE_REG      = 30550;      // RO U32, kW*1000, on the inverter
+// Free hour (remote EMS, Appendix 6). Tested on the plant: the power registers
+// (40001-40045) are refused with exception 2 unless remote EMS is already on.
+static const uint16_t REMOTE_EMS_ENABLE_REG = 40029;  // RW U16, 0 off (app's own mode) / 1 on
+static const uint16_t REMOTE_EMS_MODE_REG   = 40031;  // RW U16, used while remote EMS is on
+static const uint16_t EMS_MODE_PCS          = 0;      // PCS remote control: the inverter holds ACTIVE_POWER_PCT_REG
+static const uint16_t ACTIVE_POWER_PCT_REG  = 40005;  // RW S16, %*100 of rated, <0 = take from AC (charge)

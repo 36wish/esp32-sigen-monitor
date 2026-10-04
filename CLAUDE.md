@@ -23,7 +23,7 @@ pio run                  # build
 pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 ```
 
-- **First build:** copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and set `WIFI_SSID` and `WIFI_PASSWORD` there. All other user settings (`TZ_INFO`, off-peak hours, Charge SOCs, brightness and screen-off thresholds, `CAL_HOLD_MS`, `TOUCH_CAL_FALLBACK`, `STATUS_LED`) are in `include/settings.h`.
+- **First build:** copy `include/secrets.h.example` to `include/secrets.h` (gitignored) and set `WIFI_SSID` and `WIFI_PASSWORD` there. All other user settings (`TZ_INFO`, off-peak hours, Charge SOCs, `FREE_HOUR_CHARGE_PCT`, brightness and screen-off thresholds, `CAL_HOLD_MS`, `TOUCH_CAL_FALLBACK`, `STATUS_LED`) are in `include/settings.h`.
 - **Uploading:** this board's CH340 auto-reset can't reliably enter download mode by itself. The user has to hold BOOT and tap RESET, otherwise you get "Wrong boot mode detected (0x13)". A normal reboot afterwards (an RTS pulse, DTR low) works fine.
 - **Serial monitor:** `pio device monitor` needs an interactive terminal. To read serial output from a script, use `pyserial` at 115200.
 
@@ -53,13 +53,13 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 
 - **App loop:** a non-blocking state machine in `loop()`, `ST_WIFI → ST_LOAD_CACHE → ST_SCAN → ST_CONNECT → ST_POLL`, with `ST_WAIT_RETRY` between failed attempts. Long operations call `waitTick()`/`pumpLvgl()` so touch and redraws stay responsive. Don't add blocking delays.
 - **Finding the plant:** first it tries the IP cached in NVS (`Preferences` namespace `sigmon`, opened in `setup()`; key `ip`; every key is listed in `storage.h`). If that fails, it scans the /24 subnet in parallel for port 502. Each candidate, the cached IP included, has to answer a read of the live block in a way that looks like a Sigenergy plant: a non-zero rated power (`30010`, u32 W) and an SOC of at most 100%. Any Modbus device can answer the read, and whatever is accepted gets the Charge and Free hour writes, so `probePlant()` logs the candidates it turns down.
-- **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (`readPlantRegs()` falls back to 0x04 for the plant's RW registers), writes single registers with FC 0x06, and writes U32s with FC 0x10 (`modbusWriteU32()`, high word first). Each request gets a new transaction ID. A reply has to echo it and the unit ID, carry protocol ID 0, and have an MBAP length that fits the reply; anything else is `MB_FAIL`, which drops the link. Each poll reads registers 30005–30038 as one block:
+- **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (`readPlantRegs()` falls back to 0x04 for the plant's RW registers), writes single registers with FC 0x06, and can write U32s with FC 0x10 (`modbusWriteU32()`, high word first; nothing uses it at the moment). Each request gets a new transaction ID. A reply has to echo it and the unit ID, carry protocol ID 0, and have an MBAP length that fits the reply; anything else is `MB_FAIL`, which drops the link. Each poll reads registers 30005–30038 as one block:
   - `30005` grid power (s32; positive = import)
   - `30014` battery SOC
   - `30035` PV power (s32)
   - `30037` battery power (s32; positive = charging)
 
-  `40046` Backup SOC (u16, %×10) backs the Charge button. Free hour uses `40029` remote EMS enable, `40031` remote EMS mode and `40032` ESS max charging limit (u32, kW×1000). `ST_POLL` calls `plantTurn()`, which sends one request per turn (the plant wants ≥1 s between requests): a queued free-hour step first, then a queued Charge write, then the Backup SOC sync read (on connect and every 60 s), then the normal poll.
+  `40046` Backup SOC (u16, %×10) backs the Charge button. Free hour uses `40029` remote EMS enable, `40031` remote EMS mode and `40005` active power percentage (s16, %×100 of rated; negative = charge from AC). The plant refuses writes to `40001`–`40045` (exception 2) unless remote EMS is already on. It refuses `40001` (exception 3) even then, and `40032`/`40034` won't take `0xFFFFFFFF` back. The README's Modbus section has the live test results. `ST_POLL` calls `plantTurn()`, which sends one request per turn (the plant wants ≥1 s between requests): a queued free-hour step first, then a queued Charge write, then the Backup SOC sync read (on connect and every 60 s), then the normal poll.
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, one `build*()` per region in back-to-front order (later widgets draw on top), and `updateUi()`/`updateClock()` change it in place.
   - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`, `HERO_*`, `TILE_*`, `MODE_BTN_*`) are at the top of dashboard.cpp, the palette (`COL_*`) in theme.h.
@@ -73,12 +73,32 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
   - **Free hour** switches the screen into free-hour mode. This isn't a separate LVGL screen: `setFreeHourMode()` hides and shows widgets and moves the hero tile. In this mode the close button takes the top-left corner, with the hero tile and the "FREE HOUR" title to its right. The big number shows grid import, the house load takes the grid's place in the bottom strip, and a countdown runs to the top of the hour. The countdown runs in the mix bar's slot, extended across the hidden button column (`FREE_W`). When it reaches zero, or the close button is tapped, the screen goes back to home.
   - `updateUi()` checks `freeHour` to decide which values go where. The latest reading is kept in `reading` so a mode switch redraws straight away.
   - **System hooks** (plant.cpp): `applyChargeMode()` queues the Backup SOC write (`pendingReserve`) for `plantTurn()`. `applyFreeHourMode()` queues the free-hour steps (`emsStep`), which `emsTurn()` sends one per turn:
-    - **Start:** read `40032`. If it isn't `0xFFFFFFFF` (no limit), write `0xFFFFFFFF`. If the plant refuses that, write the rated charge power read from `30550` on inverter slave 1 instead. Then write `40029=1` and `40031=3` (command charging, grid first). A cap step that fails is logged and skipped. If the mode write is refused, remote EMS is released again.
-    - **End:** write `40029=0`, so the mySigen app's own mode (max self-consumption) takes over. The charge cap isn't restored. If the plant refuses the release, it's sent again every 60 s (`EMS_RELEASE_RETRY_MS`) until it's accepted. Until then the plant goes on charging from the grid, so `showReleasePending()` shows it on the home screen: the Free hour button stays pressed in (`LV_STATE_CHECKED`, but not checkable) with a red badge, and "STILL GRID CHARGING" appears beside the hero tile. While it's pending, a tap on the Free hour button sends the release straight away instead of opening free hour.
+    - **Start:** write `40029=1`, then `40031=0` (PCS remote control), then `40005=-FREE_HOUR_CHARGE_PCT*100`. The inverter then takes a fixed share of its rated power from the grid into the battery, so the battery can't discharge and the house runs on the grid. Don't go back to mode 3 (command charging, grid first): on this plant it holds grid import at about 4 kW, and the battery covers any house load above that. If the mode or setpoint write is refused, remote EMS is released again.
+    - **End:** write `40005=0` (only accepted while remote EMS is still on; a refusal is just logged), then `40029=0`, so the mySigen app's own mode (max self-consumption) takes over. If the plant refuses the release, it's sent again every 60 s (`EMS_RELEASE_RETRY_MS`) until it's accepted. Until then the plant goes on charging from the grid, so `showReleasePending()` shows it on the home screen: the Free hour button stays pressed in (`LV_STATE_CHECKED`, but not checkable) with a red badge, and "STILL GRID CHARGING" appears beside the hero tile. While it's pending, a tap on the Free hour button sends the release straight away instead of opening free hour.
     - A later call replaces whatever is still queued, even one made while a step's request is in flight (requests keep LVGL running, so taps are handled mid-request). A dropped link keeps the step queued until the reconnect.
     - NVS key `fhems` is set when free hour starts and cleared once remote EMS is handed back. If it's still set at boot (the ESP rebooted mid free hour), `plantBegin()` queues the release. The protocol has no remote-EMS timeout, so this is the only thing that hands control back.
 
-## Fonts
+## The Sigenergy plant
+
+- **Spec:** the register spec is `Sigenergy Modbus Protocol EN_V2.9.pdf` in the repo root. `pdftotext -layout` (in Git Bash) turns it into searchable text.
+- **The spec isn't the last word:** the plant often behaves differently from what the spec says (see the free-hour notes above and the README's "Free hour" section). Check a control change against the live plant before relying on it.
+- **Probing:** the plant is reachable from the dev PC. Probe it with a short raw-socket Python script, at least 1 s between requests, because the ESP is polling it too.
+  - Reads are always safe.
+  - Writes change how the house battery behaves. Ask the user first.
+  - Before a write, record the original values, and put them back in a `finally` block.
+  - Read each value back after writing it. A register won't always accept its original value again.
+- **Logging:** to see what a mode really does, log grid, PV, battery and plant active power (`30031`) together with the control registers while the user switches modes.
+
+### Free Hour Mode
+
+These register choices came from testing on a 5 kW SigenStor system (October 2026):
+
+- **The obvious mode doesn't work.** Mode 3, "command charging (grid first)", held grid import at a fixed 4 kW. When the house used more than that, the battery discharged to cover the rest.
+- **PCS remote control does what's wanted.** Mode 0 with 40005 = −100% made the inverter take a fixed 3.75 kW from the grid into the battery. The house ran entirely from the grid, whatever its load.
+- **The power and limit registers (40001–40045) only accept writes while remote EMS is on.** With 40029 = 0, writes are refused with exception 2. That's why 40029 is written first.
+- **40001 is refused.** The fixed active power setpoint (40001, kW) is refused with exception 3 even when remote EMS is on. The percentage register (40005) works.
+- **40032 and 40034 don't accept "no limit" back.** The ESS max charging and discharging limits read `0xFFFFFFFF` (no limit) by default, but won't take that value as a write. Only values from 0 up to the rated power are accepted, so the firmware doesn't touch them.
+- **The app's "grid only" mode isn't remote EMS.** It switches the system to its Custom mode (30003 = 9) with Backup SOC at 100%. The battery then sits idle rather than charging.
 
 The built-in Montserrat sizes are enabled in `lv_conf.h` (12/14/16/22/24/32/48). There are also two custom fonts that **contain only digits plus a few symbols**:
 
