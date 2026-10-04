@@ -6,6 +6,10 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
 
 ## What it shows
 
+![Home screen showing 2.4 kW house load, a solar-powered source mix bar, the battery at 76%, and solar, grid and battery flows along the bottom](img/home.png)
+
+*The home screen: house load, source mix, battery charge and the solar, grid and battery flows.*
+
 - **House load** as a big number, so you can see what the house is using from across the room.
 - **Source mix**: a bar showing how much of that load comes from solar, the battery and the grid.
 - **Battery** state of charge.
@@ -16,8 +20,20 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
 
 
 - **Charge button.** A toggle for holding the battery full, for example before a big weather event. When pressed it sets the system's backup reserve (Backup SOC) to 100%. Released, it sets it back to 30%. The button follows the system: it rereads the reserve every 60 seconds, so changes made in the mySigen app show up on the screen.
+
+  ![Home screen with the Charge button pressed in and the battery at 100%](img/home-charge-on.png)
+
+  *Charge on: the button stays pressed in and the battery reserve is held at 100%.*
 - **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated it switches the system to draw maximum power from the grid. It will countdown to the start of the next hour, and then automatically switces back to normal. The big number on screen switches to grid import.
+
+  ![Free hour screen showing grid import, a countdown to the top of the hour and the battery charging](img/free-hour.png)
+
+  *Free hour: the big number shows grid import, with a countdown to the top of the hour. The close button returns to the home screen.*
 - **Off-peak indicator.** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
+
+  ![Home screen at 22:15 with the big number in grey](img/home-offpeak.png)
+
+  *Off-peak: after 21:00 the big number is grey. Here the house is running entirely from the grid.*
 - **Finds the system by itself.** On first boot it scans your home network  for the system. It will save the IP address so it can connect later without rescanning.
 - **Auto-brightness.** The board's light sensor dims the backlight in a dark room.
 
