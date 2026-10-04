@@ -10,7 +10,7 @@ All firmware is in [src/main.cpp](src/main.cpp), a single file.
 - **Touch calibration:** with the board definition as it is, touch comes out mirrored left-to-right in landscape and is also off by up to ~20 px. smartdisplay's `touch_calibration_data` corrects both. The correction acts on the raw portrait point before LVGL rotates it, and LVGL maps portrait (px, py) to landscape (479 − py, px).
   - **On-screen 3-point calibration:** hold the clock area (top right) for 5 s, or send `cal` over serial. Press and hold the centre of each of the 3 crosses; a 4th cross checks the fit (it has to land within 12 px). The result is saved in NVS (`tcal`) and loaded at boot. Serial logs each raw point and the final coefficients.
   - `TOUCH_CAL_FALLBACK` (settings block) is only a fallback for when nothing has been saved yet. They came from one of these calibrations, so update them if the board's touch drifts.
-- **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness.
+- **Light sensor:** a CdS LDR on GPIO34 drives the auto-brightness. In a fully dark room (`CDS_OFF_RAW`), with no touch for `SCREEN_OFF_IDLE_MS`, the backlight turns off completely. The ESP keeps running and polling. The screen comes back on when the room gets brighter (`CDS_ON_RAW`) or when it is touched. A `wakeGuard` object on `lv_layer_top()` absorbs the tap that wakes it.
 - **Status LED:** the RGB LED is active-low and only switches on/off.
 - **Board definition:** [boards/esp32-3248S035R.json](boards/esp32-3248S035R.json) is pinned to the commit that matches `esp32_smartdisplay@2.1.1`. Upgrade the two together or not at all.
 
