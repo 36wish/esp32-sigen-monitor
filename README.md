@@ -43,7 +43,7 @@ The firmware is a [PlatformIO](https://platformio.org/) project for the Arduino 
 
    `secrets.h` is gitignored, so your WiFi details stay out of the repo.
 
-3. Optionally, change any other settings at the top of [src/main.cpp](src/main.cpp). See [Configuration](#configuration).
+3. Optionally, change any other settings in [include/settings.h](include/settings.h). See [Configuration](#configuration).
 4. Build:
 
    ```sh
@@ -64,7 +64,7 @@ The firmware is a [PlatformIO](https://platformio.org/) project for the Arduino 
    pio device monitor
    ```
 
-On first boot it scans the /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. It then saves the IP for future boot.
+On first boot it scans the /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. The answer has to look like a Sigenergy system: a non-zero rated power (register 30010) and a battery SOC between 0 and 100%. Other Modbus devices on your network are skipped, so they never get the Charge or Free hour writes. It then saves the IP for future boot.
 
 ## Touch calibration
 
@@ -76,7 +76,7 @@ These boards' resistive touch panels vary from unit to unit. If taps land in the
 
 ## Configuration
 
-All settings are in one block at the top of [src/main.cpp](src/main.cpp). The only exceptions are the WiFi network name and password, which go in `include/secrets.h`.
+All settings are in [include/settings.h](include/settings.h). The only exceptions are the WiFi network name and password, which go in `include/secrets.h`.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -87,8 +87,11 @@ All settings are in one block at the top of [src/main.cpp](src/main.cpp). The on
 | `BAR_MAX_KW` | 8.0 | Full-scale value for the solar/grid/battery bars |
 | `CDS_BRIGHT_RAW`, `CDS_DARK_RAW` | 30, 400 | Light-sensor thresholds for auto-brightness. The serial log prints the raw reading every 10 s to help you tune them for your room. |
 | `BL_MIN`, `BL_MAX` | 0.08, 1.0 | Dimmest and brightest backlight levels |
+| `CDS_OFF_RAW`, `CDS_ON_RAW` | 800, 600 | Light-sensor readings at which the screen switches off in a dark room, and back on |
+| `SCREEN_OFF_IDLE_MS` | 30000 | How long the screen has to go untouched before it can switch off |
 | `CAL_HOLD_MS` | 5000 | How long to hold the clock to start touch calibration |
 | `TOUCH_CAL_FALLBACK` | | Touch calibration used until one has been saved on the device |
+| `STATUS_LED` | false | Use the board's RGB LED as a connection and power-flow indicator |
 
 ## Modbus registers
 
@@ -117,12 +120,24 @@ The system asks for at least one second between requests, so the firmware sends 
 ## Project layout
 
 ```
-src/main.cpp              all firmware and settings: Modbus client, discovery, UI, state machine
-src/font_hero_144.c       custom font for the big number (digits only)
-src/font_num_44.c         custom font for secondary numbers and the countdown
-include/lv_conf.h         LVGL configuration
-include/secrets.h.example WiFi credentials template
-boards/                   board definition for the ESP32-3248S035R
+src/main.cpp               startup and the connection state machine
+src/discovery.cpp          finds the system on the network
+src/plant.cpp              talks to the system once connected: live readings, Charge, Free hour
+src/modbus_tcp.cpp         Modbus TCP client
+src/sigenergy.h            Modbus register map
+src/dashboard.cpp          the screen: layout, live values, Charge and Free hour modes
+src/widgets.cpp            LVGL building blocks and icons
+src/theme.h                colours and custom fonts
+src/display.cpp            backlight: auto-brightness, screen off in the dark
+src/touch_calibration.cpp  on-screen touch calibration
+src/status_led.cpp         optional RGB status LED
+src/storage.h              keys for what's saved on the device
+src/font_hero_144.c        custom font for the big number (digits only)
+src/font_num_44.c          custom font for secondary numbers and the countdown
+include/settings.h         settings
+include/lv_conf.h          LVGL configuration
+include/secrets.h.example  WiFi credentials template
+boards/                    board definition for the ESP32-3248S035R
 ```
 
 ## Acknowledgements
