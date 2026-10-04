@@ -182,4 +182,4 @@ Thanks also to [rzeldent/esp32-smartdisplay](https://github.com/rzeldent/esp32-s
 
 ## Licence
 
-MIT. See [LICENCE.md](LICENCE.md).
+See [LICENCE.md](LICENCE.md). Contact me for commercial licencing.
