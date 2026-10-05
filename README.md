@@ -1,8 +1,8 @@
 # esp32-sigen-monitor
 
-A home energy dashboard for a **Sigenergy** home battery and solar system, running on a 3.5" ESP32 touchscreen.
+A home energy dashboard for a **Sigenergy** home battery and solar system, running on a ESP32 touchscreen.
 
-The display joins your WiFi, finds the Sigenergy system on your network by itself, and reads it over local Modbus TCP once a second. It needs no cloud account, app or Home Assistant.
+The display connects over WiFi, finds the Sigenergy system on the network by itself, and reads it over local Modbus TCP. It needs no cloud account, app or Home Assistant.
 
 ## What it shows
 
@@ -19,12 +19,12 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
 ## Features
 
 
-- **Charge button.** A toggle for holding the battery full, for example before a big weather event. When pressed it sets the system's backup reserve (Backup SOC) to 100%. Released, it sets it back to 30%. The button follows the system: it rereads the reserve every 60 seconds, so changes made in the mySigen app show up on the screen.
+- **Charge button.** A toggle for holding the battery full, for example before a big weather event. When pressed it sets the system's backup reserve (Backup SOC) to 100%. Released, it sets it back to 30%. 
 
   ![Home screen with the Charge button pressed in and the battery at 100%](img/home-charge-on.png)
 
   *Charge on: the button stays pressed in and the battery reserve is held at 100%.*
-- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. The battery never discharges during the free hour. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import.
+- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import.
 
   ![Free hour screen showing grid import, a countdown to the top of the hour and the battery charging](img/free-hour.png)
 
@@ -35,16 +35,16 @@ The display joins your WiFi, finds the Sigenergy system on your network by itsel
 
   *Off-peak: after 21:00 the big number is grey. Here the house is running entirely from the grid.*
 - **Finds the system by itself.** On first boot it scans your home network  for the system. It will save the IP address so it can connect later without rescanning.
-- **Auto-brightness.** The board's light sensor dims the backlight in a dark room.
+- **Auto-brightness.** The screen adjusts brightness according to room light level, and will switch off when th eroom is completely dark.
 
 ## Hardware
 
 | Part | Notes |
 |---|---|
-| **Sunton ESP32-3248S035R** (aka "Cheap Yellow Display") | 3.5" 480×320 ST7796 LCD, resistive XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial. |
+| **Sunton ESP32-3248S035R** (aka "Cheap Yellow Display") | 3.5" 480×320 ST7796 LCD, resistive XPT2046 touch, ESP32-WROOM-32, CH340 USB-serial. It should be relatively simple to port it to other ESP32 with a touchscreen. |
 | USB cable and 5 V supply | To power it on the wall. |
 
-On the Sigenergy side, the system's **Modbus TCP server** has to be enabled, and the display must be on the same LAN. If Modbus TCP isn't on, ask your installer to enable it.
+You need to enable the **Modbus TCP server** on the Sigenergy and the display must be on the same LAN. If Modbus TCP isn't on, ask your installer to enable it.
 
 ## Building and flashing
 
@@ -69,7 +69,7 @@ The firmware is a [PlatformIO](https://platformio.org/) project for the Arduino 
 5. Flash. The board's CH340 auto-reset doesn't reliably enter download mode by itself, so **hold BOOT, tap RESET, then release BOOT** before uploading:
 
    ```sh
-   pio run -t upload
+   pio run -t upload --without-building
    ```
 
    If you see `Wrong boot mode detected (0x13)`, the board wasn't in download mode. Do the BOOT/RESET step again and retry.
@@ -80,11 +80,11 @@ The firmware is a [PlatformIO](https://platformio.org/) project for the Arduino 
    pio device monitor
    ```
 
-On first boot it scans the /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. The answer has to look like a Sigenergy system: a non-zero rated power (register 30010) and a battery SOC between 0 and 100%. Other Modbus devices on your network are skipped, so they never get the Charge or Free hour writes. It then saves the IP for future boot.
+On first boot it scans the /24 subnet for a Modbus TCP device on port 502 and checks each one with a test read. The answer has to look like a Sigenergy system: a non-zero rated power (register 30010) and a battery SOC between 0 and 100%. Other Modbus devices on your network are skipped. It then saves the IP for future boot.
 
 ## Touch calibration
 
-These boards' resistive touch panels vary from unit to unit. If taps land in the wrong place:
+These boards' resistive touch panels vary from unit to unit. To calibrate:
 
 1. Hold the clock (top right) for 5 seconds, or send `cal` over the serial port.
 2. Press and hold the centre of each of the three crosses in turn.
@@ -182,4 +182,4 @@ Thanks also to [rzeldent/esp32-smartdisplay](https://github.com/rzeldent/esp32-s
 
 ## Licence
 
-MIT. See [LICENCE.md](LICENCE.md).
+See [LICENCE.md](LICENCE.md). Contact me for commercial licencing.
