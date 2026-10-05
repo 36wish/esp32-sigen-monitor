@@ -166,7 +166,8 @@ def free_header(c, left_s):
         cx += CD_DIGIT_W
 
 
-def battery(c, soc, charge_on=False):
+def battery(c, soc, charge_on=False, fill_fx=None):
+    """fill_fx(c, x0, y0, x1, y1), if given, draws over the fill, under the SOC."""
     edge = mix(STORM, BG, 0.75) if charge_on else BORDER
     X, Y, W, H = BATT_X, BATT_Y, BATT_W, BATT_H
     c.rrect(X + (W - 44) / 2, Y - 9, X + (W + 44) / 2, Y + 2, 4, fill=edge)
@@ -177,6 +178,8 @@ def battery(c, soc, charge_on=False):
     fy1 = Y + 2 + innerH - 5
     if fillH > 0:
         c.grad_rrect(X + 7, fy1 - fillH, X + W - 7, fy1, 12, mix((255, 255, 255), bcol, 0.35), mix(bcol, (0, 0, 0), 0.8))
+        if fill_fx:
+            fill_fx(c, X + 7, fy1 - fillH, X + W - 7, fy1)
     infill = fillH >= 52
     cy = Y + 2 + (innerH - 5 - fillH / 2 if infill else (5 + innerH - 5 - fillH) / 2)
     tc = (6, 40, 30) if infill else TEXT
@@ -225,7 +228,11 @@ def is_offpeak(clock):
 
 
 # ── screens ──────────────────────────────────────────────────────────────
-def home_screen(path, pv, grid, ess, soc, clock, charge_on=False, hero_text=None):
+def home_screen(path, *a, **kw):
+    home_canvas(*a, **kw).save(path)
+
+
+def home_canvas(pv, grid, ess, soc, clock, charge_on=False, hero_text=None):
     home, shares = flows(pv, grid, ess)
     c = Canvas()
     top_bar(c, clock)
@@ -237,7 +244,7 @@ def home_screen(path, pv, grid, ess, soc, clock, charge_on=False, hero_text=None
     strip(c, [(sun, SOLAR, f"{pv:.1f}", pv),
               (red_tower, gcol, f"{abs(grid):.1f}", grid),  # icon stays red, tile follows the flow
               ess_cell(soc, ess)])
-    c.save(path)
+    return c
 
 
 def free_screen(path, pv, grid, ess, soc, clock, left_s, hero_text=None):

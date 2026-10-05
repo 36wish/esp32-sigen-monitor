@@ -4,6 +4,7 @@
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
+#include "display.h"
 #include "settings.h"
 #include "theme.h"
 #include "widgets.h"
@@ -31,6 +32,17 @@ static const int BATT_BORDER     = 2;
 static const int BATT_INSET      = 5;  // between the border and the fill
 static const int BATT_INNER_H    = BATT_H - 2 * BATT_BORDER;
 static const int BATT_FILL_MAX_H = BATT_INNER_H - 2 * BATT_INSET;
+
+// Flow glow: soft light bands travelling through the battery fill, up while
+// charging and down while discharging, faster the more power flows. Each band
+// is two gradient boxes, transparent -> peak -> transparent. The peak is
+// bright enough to show on the light yellow and red fills too.
+static const int      GLOW_PERIOD = 64;   // px from one band to the next
+static const int      GLOW_W      = 34;   // band height
+static const lv_opa_t GLOW_PEAK   = 166;  // 65%
+static const int      GLOW_BANDS  = (BATT_FILL_MAX_H + GLOW_W / 2) / GLOW_PERIOD + 2;
+static const float   GLOW_SPEED_BASE = 12, GLOW_SPEED_PER_KW = 16, GLOW_SPEED_MAX = 90;  // px/s
+static const uint32_t GLOW_TICK_MS   = 33;
 
 // Source-mix bar geometry, bottom-aligned with the battery graphic.
 static const int MIX_X   = 16;
@@ -78,6 +90,13 @@ static lv_obj_t *mixBar, *mixSolar, *mixGrid, *mixBatt;
 static lv_obj_t *battNub, *battBody, *battFill;
 static lv_obj_t *socRow, *socValue, *socPctLabel;
 
+// One flow-glow band inside battFill: rising half above the crest, falling half below.
+struct GlowBand {
+  lv_obj_t *rise, *fall;
+  lv_opa_t  opa;  // peak opacity it's drawn with now
+};
+static GlowBand glowBands[GLOW_BANDS];
+
 // One section of the bottom strip: icon tile with a bar beside it, value underneath.
 struct StripSection {
   lv_obj_t *tile;
@@ -105,12 +124,20 @@ static bool         releasePending = false;  // free hour is over but the plant 
 static uint32_t     freeHourEndMs = 0;
 static int          shownSecsLeft = -1;
 
+// Flow glow (see GLOW_*): set by showBattery(), run by glowTick().
+static float    glowSpeed = 0;     // px/s, positive = up (charging), 0 = still
+static float    glowPhase = 0;     // px, 0..GLOW_PERIOD
+static int      glowFillH = 0;
+static int      glowShownPx = -1;   // phase in whole px last placed, -1 = hidden
+static bool     glowDirty = true;   // fill changed: place again
+
 // Earlier than this, the clock hasn't been set by NTP yet.
 static const time_t CLOCK_SYNCED_AFTER = 1700000000;
 
 static void onChargeToggled(lv_event_t *e);
 static void onFreeHourOpen(lv_event_t *e);
 static void onFreeHourClose(lv_event_t *e);
+static void glowTick(lv_timer_t *t);
 
 // ── strip sections ───────────────────────────────────────────────────────
 
@@ -313,6 +340,22 @@ static void buildBattery(lv_obj_t *scr) {
   lv_obj_set_style_bg_grad_dir(battFill, LV_GRAD_DIR_VER, 0);
   lv_obj_set_style_shadow_width(battFill, 18, 0);
   lv_obj_set_style_shadow_opa(battFill, LV_OPA_40, 0);
+  lv_obj_set_style_clip_corner(battFill, true, 0);  // keeps the glow inside the rounded fill
+
+  for (GlowBand &b : glowBands) {
+    b.rise = makeFilledBox(battFill, 0xffffff, 0);
+    b.fall = makeFilledBox(battFill, 0xffffff, 0);
+    for (lv_obj_t *o : { b.rise, b.fall }) {
+      lv_obj_set_size(o, LV_PCT(100), GLOW_W / 2);
+      lv_obj_set_style_bg_grad_color(o, lv_color_hex(0xffffff), 0);
+      lv_obj_set_style_bg_grad_dir(o, LV_GRAD_DIR_VER, 0);
+      lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_style_bg_main_opa(b.rise, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_grad_opa(b.fall, LV_OPA_TRANSP, 0);
+    b.opa = LV_OPA_TRANSP;
+  }
+  lv_timer_create(glowTick, GLOW_TICK_MS, NULL);
 
   socRow = makeValueRow(battBody, 0, 0);
   socValue = makeLabel(socRow, &font_num_44, COL_TEXT, "--");
@@ -467,6 +510,69 @@ static void showSourceMix(float homeKw) {
   else                  setMixShares(0, 0, 0);
 }
 
+// ── flow glow ────────────────────────────────────────────────────────────
+
+static void hideGlow() {
+  if (glowShownPx < 0) return;
+  glowShownPx = -1;
+  for (GlowBand &b : glowBands) {
+    lv_obj_add_flag(b.rise, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(b.fall, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+// Places the bands for the current phase. The crests sit GLOW_PERIOD apart,
+// the first one at or above the top of the fill.
+static void placeGlow() {
+  int px = (int)glowPhase;
+  if (px == glowShownPx && !glowDirty) return;
+  glowShownPx = px;
+  glowDirty = false;
+  // a band fades in and out across the fill's top and bottom edges rather
+  // than being cut off there; shorter on a low fill, or it never shows at all
+  float edge = fminf(10, glowFillH / 5.0f);
+  for (int k = 0; k < GLOW_BANDS; k++) {
+    GlowBand &b = glowBands[k];
+    int crest = k * GLOW_PERIOD - px;
+    float fade = edge > 0 ? fminf(crest, glowFillH - crest) / edge : 0;
+    lv_opa_t opa = (lv_opa_t)(GLOW_PEAK * fminf(fmaxf(fade, 0), 1));
+    setVisible(b.rise, opa > 0);
+    setVisible(b.fall, opa > 0);
+    if (opa == 0) continue;
+    lv_obj_set_y(b.rise, crest - GLOW_W / 2);
+    lv_obj_set_y(b.fall, crest);
+    if (opa != b.opa) {
+      b.opa = opa;
+      lv_obj_set_style_bg_grad_opa(b.rise, opa, 0);
+      lv_obj_set_style_bg_main_opa(b.fall, opa, 0);
+    }
+  }
+}
+
+// LVGL timer: moves the bands on by however long it's been since the last tick.
+static void glowTick(lv_timer_t *t) {
+  static uint32_t last = lv_tick_get();
+  uint32_t now = lv_tick_get();
+  float dt = (now - last) / 1000.0f;
+  last = now;
+  if (glowSpeed == 0 || screenIsOff()) {
+    hideGlow();
+    return;
+  }
+  glowPhase = fmodf(glowPhase + glowSpeed * dt, GLOW_PERIOD);
+  if (glowPhase < 0) glowPhase += GLOW_PERIOD;
+  placeGlow();
+}
+
+// Glow speed from the battery power.
+static void setGlow(int fillH) {
+  float kw = reading.essKw;
+  glowSpeed = fabsf(kw) < IDLE_KW ? 0
+            : copysignf(fminf(GLOW_SPEED_BASE + GLOW_SPEED_PER_KW * fabsf(kw), GLOW_SPEED_MAX), kw);
+  glowFillH = fillH;
+  glowDirty = true;
+}
+
 static void showBattery(int soc) {
   uint32_t col = soc >= 50 ? COL_BATT_HI : (soc >= 20 ? COL_BATT_MID : COL_BATT_LOW);
   int fillH = BATT_FILL_MAX_H * soc / 100;
@@ -474,6 +580,7 @@ static void showBattery(int soc) {
   lv_obj_set_style_bg_color(battFill, tint(0xffffff, col, 90), 0);
   lv_obj_set_style_bg_grad_color(battFill, tint(col, 0x000000, 204), 0);
   lv_obj_set_style_shadow_color(battFill, lv_color_hex(col), 0);
+  setGlow(fillH);
 
   char buf[8];
   snprintf(buf, sizeof(buf), "%d", soc);
@@ -499,14 +606,17 @@ static void showStrip(float homeKw, int soc) {
     snprintf(buf, sizeof(buf), "%.1f", homeKw);
     lv_label_set_text(secGrid.value, buf);
     setSectionColor(secGrid, COL_HOME);
+    lv_obj_set_style_text_color(secGrid.value, lv_color_hex(COL_TEXT), 0);
     setBarKw(secGrid.bar, homeKw);
   } else {
     float gridKw = reading.gridKw;
-    snprintf(buf, sizeof(buf), "%.1f", fabsf(gridKw));
-    lv_label_set_text(secGrid.value, buf);
     bool importing = gridKw > IDLE_KW, exporting = gridKw < -IDLE_KW;
+    // sign only when exporting, so an idle grid reads "0.0" rather than "-0.0"
+    snprintf(buf, sizeof(buf), "%.1f", exporting ? gridKw : fabsf(gridKw));
+    lv_label_set_text(secGrid.value, buf);
     setSectionColor(secGrid, importing ? COL_IMPORT : (exporting ? COL_EXPORT : COL_IDLE));
     setIconColor(secGrid.icon, COL_IMPORT);  // icon stays red to match the mix bar
+    lv_obj_set_style_text_color(secGrid.value, lv_color_hex(gridKw < -IDLE_KW ? COL_MUTED : COL_TEXT), 0);
     setBarKw(secGrid.bar, gridKw);
   }
 
@@ -517,6 +627,7 @@ static void showStrip(float homeKw, int soc) {
   lv_label_set_text(secBatt.value, buf);
   uint32_t flowCol = essKw > IDLE_KW ? COL_CHARGE : (essKw < -IDLE_KW ? COL_DISCHARGE : COL_IDLE);
   setSectionColor(secBatt, flowCol);
+  lv_obj_set_style_text_color(secBatt.value, lv_color_hex(essKw < -IDLE_KW ? COL_MUTED : COL_TEXT), 0);
   setBattIconLevel(secBatt.icon, soc);
   setBarKw(secBatt.bar, essKw);
 }

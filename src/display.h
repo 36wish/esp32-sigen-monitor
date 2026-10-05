@@ -17,3 +17,6 @@ void waitTick();
 
 // Waits `ms` milliseconds with LVGL still running.
 void waitMs(uint32_t ms);
+
+// True while the backlight is off in a dark room.
+bool screenIsOff();

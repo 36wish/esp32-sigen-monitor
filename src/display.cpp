@@ -59,6 +59,10 @@ static void setScreenOff(bool off) {
   if (off) lv_obj_remove_flag(wakeGuard, LV_OBJ_FLAG_HIDDEN);
 }
 
+bool screenIsOff() {
+  return screenOff;
+}
+
 // smartdisplay's brightness callback, every BL_INTERVAL_MS. Returns the
 // backlight level, 0 while the screen is off.
 static float adaptiveBrightness() {
