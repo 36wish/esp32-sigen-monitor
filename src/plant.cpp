@@ -1,6 +1,6 @@
 #include "plant.h"
 
-#include "dashboard.h"  // showReading(), showChargeOn(), chargeButtonOn(), showReleasePending()
+#include "dashboard.h"  // showReading(), showChargeOn(), chargeButtonOn(), showReleasePending(), showFreeHour*()
 #include "discovery.h"  // modbusPortOpen()
 #include "modbus_tcp.h"
 #include "settings.h"
@@ -39,6 +39,18 @@ static const uint32_t EMS_RELEASE_RETRY_MS = 60000;
 static bool     retryRelease = false;   // the plant refused the release; queue it again...
 static uint32_t releaseRefusedAt = 0;   // ...EMS_RELEASE_RETRY_MS after this
 
+// Free hour energy: the plant's lifetime counters, read when free hour starts,
+// every ENERGY_INTERVAL_MS while it runs and once more when it ends; the
+// differences are the session's energy. The counters keep going while the
+// link is down, so a reconnect loses nothing, unless the start read itself
+// waits for one: then the total starts from there.
+enum EnergyRead { ENERGY_NONE, ENERGY_START, ENERGY_RUNNING, ENERGY_END };
+static EnergyRead energyRead = ENERGY_NONE;  // the read that's queued
+static const uint32_t ENERGY_INTERVAL_MS = 30000;
+static uint32_t   lastEnergyAt = 0;          // ENERGY_RUNNING: when it was last read
+static bool       haveStartCounters = false;
+static uint64_t   startCounters[3];          // grid, battery, house in kWh*100 when it started
+
 void plantBegin() {
   if (prefs.getBool(NVS_FREE_HOUR, false)) {
     // a free hour was running when the ESP last stopped; hand control back to the app
@@ -65,8 +77,12 @@ void applyFreeHourMode(bool on) {
   if (on) {
     prefs.putBool(NVS_FREE_HOUR, true);
     emsStep = EMS_ENABLE;
+    haveStartCounters = false;
+    energyRead = ENERGY_START;
   } else {
     emsStep = EMS_ZERO_POWER;
+    // also a pending-release retry, which has no session (unless its end read is still queued)
+    energyRead = haveStartCounters ? ENERGY_END : ENERGY_NONE;
   }
 }
 
@@ -215,6 +231,53 @@ static ModbusResult syncChargeButton() {
   return r;
 }
 
+static bool energyReadDue() {
+  return energyRead == ENERGY_START || energyRead == ENERGY_END ||
+         (energyRead == ENERGY_RUNNING && millis() - lastEnergyAt >= ENERGY_INTERVAL_MS);
+}
+
+// Reads the lifetime counters for the queued free-hour energy read. On
+// MB_FAIL it stays queued. The request keeps LVGL running while it waits;
+// if free hour starts or ends meanwhile, this reply is stale and dropped.
+static ModbusResult readFreeHourEnergy() {
+  const EnergyRead what = energyRead;
+  uint16_t regs[ENERGY_BLOCK_COUNT];
+  ModbusResult r = modbusReadRegisters(client, PLANT_SLAVE_ID, FC_READ_HOLDING, ENERGY_BLOCK_START,
+                                       ENERGY_BLOCK_COUNT, regs);
+  if (r == MB_FAIL || energyRead != what) return r;
+  lastEnergyAt = millis();
+  if (r != MB_OK) {
+    // without the start or end counters there's no total; a running read just waits for the next
+    Serial.println("Plant refused energy counter read");
+    if (what != ENERGY_RUNNING) {
+      energyRead = ENERGY_NONE;
+      haveStartCounters = false;
+    }
+    return r;
+  }
+  const uint16_t addrs[3] = { GRID_IMPORT_TOTAL_REG, ESS_CHARGED_TOTAL_REG, LOAD_TOTAL_REG };
+  uint64_t now[3];
+  for (int i = 0; i < 3; i++) now[i] = toU64(&regs[addrs[i] - ENERGY_BLOCK_START]);
+  if (what == ENERGY_START) {
+    memcpy(startCounters, now, sizeof(now));
+    haveStartCounters = true;
+    energyRead = ENERGY_RUNNING;
+  }
+  // in whole hundredths first: a float can't hold a lifetime total to 0.01 kWh
+  auto since = [&now](int i) { return now[i] > startCounters[i] ? (now[i] - startCounters[i]) / 100.0f : 0.0f; };
+  FreeHourEnergy used = { since(0), since(1), since(2) };
+  if (what == ENERGY_END) {
+    Serial.printf("Free hour used %.2f kWh from the grid: %.2f into the battery, %.2f house load\n",
+                  used.gridKwh, used.battKwh, used.houseKwh);
+    energyRead = ENERGY_NONE;
+    haveStartCounters = false;
+    showFreeHourSummary(used);
+  } else {
+    showFreeHourEnergy(used);
+  }
+  return r;
+}
+
 // Reads the live block and puts it on screen. Any failure, even a refusal,
 // counts as a dropped link.
 static ModbusResult readLiveValues() {
@@ -247,6 +310,9 @@ bool plantTurn() {
   } else if (pendingReserve >= 0) {
     what = "Backup SOC write";
     r = writeBackupSoc();
+  } else if (energyReadDue()) {
+    what = "Energy read";
+    r = readFreeHourEnergy();
   } else if (needChargeSync || millis() - lastChargeSyncAt >= CHARGE_SYNC_INTERVAL_MS) {
     what = "Backup SOC read";
     r = syncChargeButton();

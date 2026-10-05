@@ -24,11 +24,15 @@ The display connects over WiFi, finds the Sigenergy system on the network by its
   ![Home screen with the Charge button pressed in and the battery at 100%](img/home-charge-on.png)
 
   *Charge on: the button stays pressed in and the battery reserve is held at 100%.*
-- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import.
+- **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import, and beside the countdown is the energy taken from the grid so far.
 
-  ![Free hour screen showing grid import, a countdown to the top of the hour and the battery charging](img/free-hour.png)
+  ![Free hour screen showing grid import, the kWh used so far, a countdown to the top of the hour and the battery charging](img/free-hour.png)
 
-  *Free hour: the big number shows grid import, with a countdown to the top of the hour. The close button returns to the home screen.*
+  *Free hour: the big number shows grid import, with the kWh used so far and a countdown to the top of the hour. The close button returns to the home screen.*
+
+  When the free hour ends, a summary shows how much it took from the grid, when it started and finished, and how much of that went into the battery and the house. Tap to close it.
+
+  ![Summary card over the home screen: 6.4 kWh from 20:03 to 21:00, 4.3 kWh into the battery and 2.1 kWh to the house](img/free-hour-summary.png)
 - **Off-peak indicator.** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
 
   ![Home screen at 22:15 with the big number in grey](img/home-offpeak.png)
@@ -144,6 +148,14 @@ Free hour uses the system's remote EMS control (Appendix 6 of the Sigenergy Modb
 | 40005 | Active power percentage | s16, %×100 of the inverter's rated power; negative = take power from the grid (charge) |
 
 To start, it writes 40029 = 1, then 40031 = 0, then 40005 = −`FREE_HOUR_CHARGE_PCT`×100. To end, it writes 40005 = 0, then 40029 = 0. If the system refuses to turn remote EMS off, the screen shows "STILL GRID CHARGING" and the release is retried every 60 seconds. If the ESP reboots during a free hour, it releases remote EMS as soon as it reconnects. The protocol has no timeout of its own.
+
+The energy figures come from the system's lifetime counters (u64, kWh×100), read as one block (30200–30231) when free hour starts, every 30 seconds while it runs, and once more when it ends. They match the mySigen app's statistics and keep counting if the connection drops.
+
+| Register | Value |
+|---|---|
+| 30200 | Total energy charged into the battery |
+| 30216 | Total energy imported from the grid |
+| 30228 | Total house load (from every source) |
 
 
 

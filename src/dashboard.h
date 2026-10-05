@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 #include <IPAddress.h>
-#include "plant.h"  // PlantReading
+#include "plant.h"  // PlantReading, FreeHourEnergy
 
 // The dashboard screen. buildUi() builds it once; everything else changes it
 // in place. Also runs the Charge and Free hour modes: button handlers and the
@@ -26,6 +26,13 @@ bool chargeButtonOn();
 // still charging from the grid: the Free hour button stays pressed in with a
 // red badge (a tap sends the release again) and a red title shows.
 void showReleasePending(bool on);
+
+// Energy taken from the grid so far, in the free-hour countdown row.
+void showFreeHourEnergy(const FreeHourEnergy &e);
+
+// The totals for a free hour that has ended: a summary card over the home
+// screen, with when it ran, until it's tapped.
+void showFreeHourSummary(const FreeHourEnergy &e);
 
 // Clock and off-peak shading; call about once a second.
 void updateClock();

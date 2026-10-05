@@ -35,3 +35,8 @@ inline uint32_t toU32(const uint16_t *regs) {
 inline int32_t toS32(const uint16_t *regs) {
   return (int32_t)toU32(regs);
 }
+
+// A 64-bit value held in four registers, high word first.
+inline uint64_t toU64(const uint16_t *regs) {
+  return ((uint64_t)toU32(regs) << 32) | toU32(regs + 2);
+}

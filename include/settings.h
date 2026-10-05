@@ -15,7 +15,7 @@ static const int OFFPEAK_END_HOUR   = 7;
 // Charge button: the battery reserve (Backup SOC, %) written to the plant when
 // it's pressed in and when it's released.
 static const uint16_t CHARGE_ON_SOC  = 100;
-static const uint16_t CHARGE_OFF_SOC = 30;
+static const uint16_t CHARGE_OFF_SOC = 25;
 // Reread it this often so the button follows changes made elsewhere (mySigen app).
 static const uint32_t CHARGE_SYNC_INTERVAL_MS = 60000;
 

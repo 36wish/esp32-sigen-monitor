@@ -3,8 +3,9 @@
 #include <WiFi.h>
 
 // The Modbus link to the plant once it's been found. Each turn sends one
-// request: a queued Free hour step or Charge write first, then the Charge
-// button sync, otherwise the live poll, which goes to the dashboard.
+// request: a queued Free hour step or Charge write first, then a free-hour
+// energy read, then the Charge button sync, otherwise the live poll, which
+// goes to the dashboard.
 
 // One poll's worth of live values.
 struct PlantReading {
@@ -12,6 +13,13 @@ struct PlantReading {
   float socPct;
   float pvKw;
   float essKw;   // battery; positive = charging
+};
+
+// Energy since free hour started, from the plant's lifetime counters.
+struct FreeHourEnergy {
+  float gridKwh;   // imported
+  float battKwh;   // charged into the battery
+  float houseKwh;  // house load, from every source
 };
 
 // Flows smaller than this (kW) count as idle.
@@ -38,5 +46,7 @@ void applyChargeMode(bool on);
 
 // Free hour started (on) or ended (off: close button, countdown reached 0, or
 // a tap on the Free hour button while a release is pending): queues the remote
-// EMS steps, replacing whatever is still queued.
+// EMS steps, replacing whatever is still queued. Also totals the energy over
+// the free hour: showFreeHourEnergy() while it runs, showFreeHourSummary()
+// once it has ended.
 void applyFreeHourMode(bool on);

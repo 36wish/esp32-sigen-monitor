@@ -1,5 +1,6 @@
 """Mockups of the current dashboard, drawn at the buildUi() coordinates in
-src/dashboard.cpp: home screen (with Charge off/on and off-peak) and free hour.
+src/dashboard.cpp: home screen (with Charge off/on and off-peak), free hour,
+and the summary card shown when a free hour ends.
 
 Uses the Montserrat TTFs from the LVGL package, so `pio run` must have run once.
 Usage: python dashboard.py <out_dir>
@@ -38,7 +39,9 @@ CLOSE = (10, 4, 38, 36)
 CD_DIGIT_W, CD_COLON_W = 30, 11
 COUNTDOWN_W = 4 * CD_DIGIT_W + CD_COLON_W
 FREE_W = BATT_X - 14 - MIX_X
-FREE_BAR_W = FREE_W - COUNTDOWN_W - 16
+FREE_KWH_TILE = 34
+SUM_W, SUM_H = 300, 244                   # free-hour summary card, centred
+SUM_X, SUM_Y = (480 - SUM_W) // 2, (320 - SUM_H) // 2
 STRIP_X, STRIP_Y, STRIP_W, STRIP_H = 10, 212, 460, 100
 SECTION_W = (STRIP_W - 2) // 3
 BAR_MAX_KW = 8
@@ -146,23 +149,29 @@ def mode_buttons(c, charge_on):
     icon_button(c, MODE_BTN_X, FREE_BTN_Y, MODE_BTN_W, MODE_BTN_H, icon_clock, FREE)
 
 
-def free_header(c, left_s):
-    """Close button, FREE HOUR title and the countdown in the mix bar's slot."""
+def free_header(c, left_s, kwh=3.9):
+    """Close button, FREE HOUR title, and the mix bar's slot: grid tile and the
+    kWh taken so far on the left, the countdown on the right."""
     bx, by, bw, bh = CLOSE
     icon_button(c, bx, by, bw, bh, lambda cc, x, y, s, col, bg: icon_close(cc, x, y, 20, TEXT), TEXT)
     x, y, t = FREE_TILE
     c.text(x + t + 12, y + t / 2, "FREE HOUR", 14, FREE, "b", "lm", spacing=2)
-    c.rrect(MIX_X, MIX_Y + 6, MIX_X + FREE_BAR_W, MIX_Y + MIX_H, 9, fill=CARD2)
-    c.grad_rrect(MIX_X, MIX_Y + 6, MIX_X + max(18, FREE_BAR_W * left_s / 3600), MIX_Y + MIX_H, 9,
-                 mix((255, 255, 255), FREE, 0.35), FREE, vertical=False)
+    base = MIX_Y + MIX_H
+    tbg = mix(IMPORT, CARD, 0.16)
+    c.rrect(MIX_X, MIX_Y + 2, MIX_X + FREE_KWH_TILE, MIX_Y + 2 + FREE_KWH_TILE, 9, fill=tbg)
+    icon_grid(c, MIX_X + FREE_KWH_TILE / 2, MIX_Y + 2 + FREE_KWH_TILE / 2, 20, IMPORT)
+    v = "-.-" if kwh is None else (f"{kwh:.0f}" if kwh >= 9.95 else f"{kwh:.1f}")
+    vx = MIX_X + FREE_KWH_TILE + 12
+    c.text(vx, base, v, 44, TEXT, "sb", "ls")
+    c.text(vx + c.textw(v, 44, "sb") + 5, base, "kWh", 16, MUTED, "r", "ls")
     # each digit centred in a fixed cell, like cdDigits[]
     mm, ss = divmod(left_s, 60)
     cx = MIX_X + FREE_W - COUNTDOWN_W
     for i, ch in enumerate(f"{mm:02d}{ss:02d}"):
         if i == 2:
-            c.text(cx + CD_COLON_W / 2, MIX_Y + MIX_H, ":", 44, FREE, "sb", "ms")
+            c.text(cx + CD_COLON_W / 2, base, ":", 44, FREE, "sb", "ms")
             cx += CD_COLON_W
-        c.text(cx + CD_DIGIT_W / 2, MIX_Y + MIX_H, ch, 44, FREE, "sb", "ms")
+        c.text(cx + CD_DIGIT_W / 2, base, ch, 44, FREE, "sb", "ms")
         cx += CD_DIGIT_W
 
 
@@ -247,17 +256,52 @@ def home_canvas(pv, grid, ess, soc, clock, charge_on=False, hero_text=None):
     return c
 
 
-def free_screen(path, pv, grid, ess, soc, clock, left_s, hero_text=None):
+def free_screen(path, pv, grid, ess, soc, clock, left_s, hero_text=None, kwh=3.9):
     home, _ = flows(pv, grid, ess)
     c = Canvas()
     top_bar(c, clock)
     hero(c, tower, IMPORT, max(0, grid), num=OFFPEAK if is_offpeak(clock) else TEXT,
          tile=FREE_TILE, text=hero_text)
-    free_header(c, left_s)
+    free_header(c, left_s, kwh)
     battery(c, soc)
     strip(c, [(sun, SOLAR, f"{pv:.1f}", pv),
               (icon_house, HOMEV, f"{home:.1f}", home),
               ess_cell(soc, ess)])
+    c.save(path)
+
+
+def summary_card(c, start, end, grid_kwh, batt_kwh, house_kwh, soc):
+    """Shown over the home screen when a free hour ends; a tap closes it."""
+    c.img.alpha_composite(Image.new("RGBA", c.img.size, BG + (204,)))
+    x0, y0 = SUM_X, SUM_Y
+    c.rrect(x0, y0, x0 + SUM_W, y0 + SUM_H, 16, fill=CARD, outline=BORDER, width=1)
+    icon_clock(c, x0 + 30, y0 + 28, 24, FREE)
+    c.text(x0 + 50, y0 + 28, "FREE HOUR DONE", 14, FREE, "b", "lm", spacing=2)
+    # what came from the grid, then when
+    v = f"{grid_kwh:.1f}"
+    nw, uw = c.textw(v, 44, "sb"), c.textw("kWh", 24)
+    lx = x0 + (SUM_W - (nw + 6 + uw)) / 2
+    c.text(lx, y0 + 93, v, 44, TEXT, "sb", "ls")
+    c.text(lx + nw + 6, y0 + 92, "kWh", 24, MUTED, "r", "ls")
+    c.text(x0 + SUM_W / 2, y0 + 117, f"{start} - {end}", 16, MUTED, "r", "mm")
+    # where it went
+    c.line([(x0 + 20, y0 + 142), (x0 + SUM_W - 20, y0 + 142)], BORDER, 1, caps=False)
+    for i, (ic, col, label, kwh) in enumerate(((batt_icon(soc), BATT, "Battery", batt_kwh),
+                                               (icon_house, HOMEV, "House", house_kwh))):
+        x = x0 + 20 + i * 140
+        tbg = mix(col, CARD, 0.16)
+        c.rrect(x, y0 + 156, x + 34, y0 + 190, 9, fill=tbg)
+        ic(c, x + 17, y0 + 173, 22, col, tbg)
+        c.text(x + 44, y0 + 167, label, 14, MUTED, "r", "ls")
+        v = f"{kwh:.1f}"
+        c.text(x + 44, y0 + 186, v, 24, TEXT, "r", "ls")
+        c.text(x + 44 + c.textw(v, 24) + 4, y0 + 186, "kWh", 14, MUTED, "r", "ls")
+    c.text(x0 + SUM_W / 2, y0 + 231, "tap to close", 14, mix(MUTED, CARD, 0.5), "r", "ms")
+
+
+def summary_screen(path, home, start, end, grid_kwh, batt_kwh, house_kwh):
+    c = home_canvas(**home)
+    summary_card(c, start, end, grid_kwh, batt_kwh, house_kwh, home["soc"])
     c.save(path)
 
 
@@ -286,12 +330,14 @@ if __name__ == "__main__":
     night = dict(pv=0.0, grid=1.2, ess=0.0, soc=45, clock="22:15")
     free = dict(pv=0.2, grid=6.8, ess=4.5, soc=54, clock="20:36", left_s=23 * 60 + 41)
     files = [P(n) for n in ("home.png", "home-charge-on.png", "home-offpeak.png", "home-widest.png",
-                            "free-hour.png", "free-hour-widest.png")]
+                            "free-hour.png", "free-hour-widest.png", "free-hour-summary.png")]
     home_screen(files[0], **day)
     home_screen(files[1], **charge, charge_on=True)
     home_screen(files[2], **night)
     home_screen(files[3], **day, hero_text="4.4")   # widest realistic hero value
     free_screen(files[4], **free)
-    free_screen(files[5], **dict(free, left_s=58 * 60 + 8), hero_text="4.4")
+    free_screen(files[5], **dict(free, left_s=58 * 60 + 8), hero_text="4.4", kwh=9.9)
+    summary_screen(files[6], dict(pv=0.0, grid=1.1, ess=0.0, soc=88, clock="21:02"),
+                   "20:03", "21:00", 6.4, 4.3, 2.1)
     sheet(files, P("overview.png"))
     print("\n".join(files))

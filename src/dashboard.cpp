@@ -64,16 +64,20 @@ static const int FREE_TILE_X = 58, FREE_TILE_Y = 6;
 static const int MODE_BTN_X = 314, MODE_BTN_W = 40, MODE_BTN_H = 79;
 static const int CHARGE_BTN_Y = BATT_Y, FREE_BTN_Y = 122;
 
-// Free-hour countdown: "mm:ss" right-aligned in the mix bar's slot, which runs
-// on across the (hidden) button column to the battery, with a bar beside it
-// that drains to the top of the hour. font_num_44 digits are proportional
-// ("1" is 17px, "4" is 30px), so each digit gets its own fixed cell; otherwise
-// the text changes width every second and jumps around.
+// Free-hour countdown row, in the mix bar's slot, which runs on across the
+// (hidden) button column to the battery: a grid tile and the kWh imported so
+// far on the left, "mm:ss" to the top of the hour right-aligned. font_num_44
+// digits are proportional ("1" is 17px, "4" is 30px), so each countdown digit
+// gets its own fixed cell; otherwise the text changes width every second and
+// jumps around. Whole kWh from 10 up, so the total never reaches the countdown.
 static const int CD_DIGIT_W  = 30;  // widest digit in font_num_44
 static const int CD_COLON_W  = 11;
 static const int COUNTDOWN_W = 4 * CD_DIGIT_W + CD_COLON_W;
 static const int FREE_W      = BATT_X - 14 - MIX_X;
-static const int FREE_BAR_W  = FREE_W - COUNTDOWN_W - 16;
+static const int FREE_KWH_TILE = 34;
+
+// Free-hour summary card, centred over the home screen when free hour ends.
+static const int SUM_W = 300, SUM_H = 244;
 
 // Bottom strip: three equal sections inside a 1px border.
 static const int STRIP_X = 10, STRIP_Y = 212, STRIP_W = 460, STRIP_H = 100;
@@ -109,8 +113,12 @@ static StripSection secSolar, secGrid, secBatt;
 
 // Mode buttons (home screen) and the free-hour header/countdown.
 static lv_obj_t *chargeBtn, *chargeIcon, *freeBtn, *freeIcon;
-static lv_obj_t *closeBtn, *freeTitle, *freeBar, *freeCountdown;
+static lv_obj_t *closeBtn, *freeTitle, *freeKwhTile, *freeKwhRow, *freeKwhValue, *freeCountdown;
 static lv_obj_t *cdDigits[4];  // m m : s s, inside freeCountdown
+
+// Free-hour summary: a dimmed layer over the home screen (a tap closes it)
+// holding the card.
+static lv_obj_t *summary, *sumTotal, *sumTimes, *sumBattIcon, *sumBattValue, *sumHouseValue;
 
 // Pending release (home screen): the Free hour button stays pressed in with a
 // red badge, and a red title sits beside the hero tile.
@@ -123,6 +131,7 @@ static bool         freeHour = false;
 static bool         releasePending = false;  // free hour is over but the plant refused the release
 static uint32_t     freeHourEndMs = 0;
 static int          shownSecsLeft = -1;
+static time_t       freeStartedAt = 0, freeEndedAt = 0;  // wall clock, for the summary card
 
 // Flow glow (see GLOW_*): set by showBattery(), run by glowTick().
 static float    glowSpeed = 0;     // px/s, positive = up (charging), 0 = still
@@ -137,6 +146,7 @@ static const time_t CLOCK_SYNCED_AFTER = 1700000000;
 static void onChargeToggled(lv_event_t *e);
 static void onFreeHourOpen(lv_event_t *e);
 static void onFreeHourClose(lv_event_t *e);
+static void onSummaryClose(lv_event_t *e);
 static void glowTick(lv_timer_t *t);
 
 // ── strip sections ───────────────────────────────────────────────────────
@@ -282,9 +292,9 @@ static void buildPendingRelease(lv_obj_t *scr) {
   for (lv_obj_t *o : { pendingBadge, pendingTitle }) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Free-hour header and countdown, hidden until free hour starts: the close
+// Free-hour header and countdown row, hidden until free hour starts: the close
 // button in the corner, then the hero tile (moved there by setFreeHourMode()),
-// then the title. The countdown takes the mix bar's slot.
+// then the title. The kWh so far and the countdown take the mix bar's slot.
 static void buildFreeHour(lv_obj_t *scr) {
   closeBtn = makeButton(scr, 10, 4, 38, 36);
   setIconColor(makeCloseIcon(closeBtn), COL_TEXT);
@@ -295,16 +305,19 @@ static void buildFreeHour(lv_obj_t *scr) {
   lv_obj_set_style_text_letter_space(freeTitle, 2, 0);
   lv_obj_set_pos(freeTitle, FREE_TILE_X + TILE_SIZE + 12, FREE_TILE_Y + (TILE_SIZE - 16) / 2);
 
-  freeBar = makeBar(scr, MIX_X, MIX_Y + 6, FREE_BAR_W, MIX_H - 6);
-  lv_bar_set_range(freeBar, 0, 3600);
-  lv_obj_set_style_radius(freeBar, 9, LV_PART_MAIN);
-  lv_obj_set_style_radius(freeBar, 9, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_color(freeBar, lv_color_hex(COL_CARD2), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(freeBar, tint(0xffffff, COL_FREE, 90), LV_PART_INDICATOR);
-  lv_obj_set_style_bg_grad_color(freeBar, lv_color_hex(COL_FREE), LV_PART_INDICATOR);
-  lv_obj_set_style_bg_grad_dir(freeBar, LV_GRAD_DIR_HOR, LV_PART_INDICATOR);
+  // values' baseline on the mix bar's bottom edge (font_num_44: line height 42, baseline 4)
+  freeKwhTile = makeFilledBox(scr, COL_CARD, 9);
+  lv_obj_set_style_bg_color(freeKwhTile, tileColor(COL_IMPORT), 0);
+  lv_obj_set_size(freeKwhTile, FREE_KWH_TILE, FREE_KWH_TILE);
+  lv_obj_set_pos(freeKwhTile, MIX_X, MIX_Y + MIX_H - FREE_KWH_TILE);
+  setIconColor(makeGridIcon(freeKwhTile), COL_IMPORT);
 
-  // baseline on the mix bar's bottom edge (font_num_44: line height 42, baseline 4)
+  freeKwhRow = makeValueRow(scr, MIX_X + FREE_KWH_TILE + 12, MIX_Y + MIX_H - (42 - 4));
+  freeKwhValue = makeLabel(freeKwhRow, &font_num_44, COL_TEXT, "-.-");
+  lv_obj_t *unit = makeLabel(freeKwhRow, &lv_font_montserrat_16, COL_MUTED, "kWh");
+  lv_obj_set_style_pad_left(unit, 5, 0);
+  lv_obj_set_style_pad_bottom(unit, 1, 0);  // baseline-align with the 44px value
+
   freeCountdown = makeBox(scr);
   lv_obj_set_size(freeCountdown, COUNTDOWN_W, 42);
   lv_obj_set_pos(freeCountdown, MIX_X + FREE_W - COUNTDOWN_W, MIX_Y + MIX_H - (42 - 4));
@@ -318,8 +331,73 @@ static void buildFreeHour(lv_obj_t *scr) {
                                    LV_TEXT_ALIGN_CENTER);
   }
 
-  for (lv_obj_t *o : { closeBtn, freeTitle, freeBar, freeCountdown })
+  for (lv_obj_t *o : { closeBtn, freeTitle, freeKwhTile, freeKwhRow, freeCountdown })
     lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+// One "where it went" cell of the summary card: icon tile, label, kWh value.
+static lv_obj_t *makeSummaryCell(lv_obj_t *card, int x, lv_obj_t *(*makeIcon)(lv_obj_t *), uint32_t col,
+                                 const char *label, lv_obj_t **icon) {
+  lv_obj_t *tile = makeFilledBox(card, COL_CARD, 9);
+  lv_obj_set_style_bg_color(tile, tileColor(col), 0);
+  lv_obj_set_size(tile, 34, 34);
+  lv_obj_set_pos(tile, x, 156);
+  *icon = makeIcon(tile);
+  setIconColor(*icon, col);
+  lv_obj_set_pos(makeLabel(card, &lv_font_montserrat_14, COL_MUTED, label), x + 44, 154);
+  lv_obj_t *row = makeValueRow(card, x + 44, 164);
+  lv_obj_t *value = makeLabel(row, &lv_font_montserrat_24, COL_TEXT, "");
+  lv_obj_t *unit = makeLabel(row, &lv_font_montserrat_14, COL_MUTED, "kWh");
+  lv_obj_set_style_pad_left(unit, 4, 0);
+  lv_obj_set_style_pad_bottom(unit, 2, 0);  // baseline-align with the 24px value
+  return value;
+}
+
+// Shown when a free hour ends: the kWh it took from the grid and when it ran,
+// then how much went into the battery and the house. Hidden until then. Only
+// fonts the rest of the screen already uses: flash is nearly full, and
+// Montserrat 48 alone would take ~95 KB.
+static void buildFreeSummary(lv_obj_t *scr) {
+  summary = makeFilledBox(scr, COL_BG, 0);
+  lv_obj_set_size(summary, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_opa(summary, LV_OPA_80, 0);
+  lv_obj_add_flag(summary, LV_OBJ_FLAG_CLICKABLE);  // the card's parts aren't, so a tap anywhere closes it
+  lv_obj_add_event_cb(summary, onSummaryClose, LV_EVENT_CLICKED, nullptr);
+
+  lv_obj_t *card = makeFilledBox(summary, COL_CARD, 16);
+  lv_obj_set_size(card, SUM_W, SUM_H);
+  lv_obj_set_style_border_color(card, lv_color_hex(COL_BORDER), 0);
+  lv_obj_set_style_border_width(card, 1, 0);
+  lv_obj_center(card);
+
+  lv_obj_t *icon = makeClockIcon(card);
+  setIconColor(icon, COL_FREE);
+  lv_obj_set_pos(icon, 18, 16);
+  lv_obj_t *title = makeLabel(card, &lv_font_montserrat_14, COL_FREE, "FREE HOUR DONE");
+  lv_obj_set_style_text_letter_space(title, 2, 0);
+  lv_obj_set_pos(title, 50, 20);
+
+  // total and times centred; aligned (not placed) so they re-centre when the text changes
+  lv_obj_t *row = makeValueRow(card, 0, 0);
+  lv_obj_align(row, LV_ALIGN_TOP_MID, 0, 55);
+  sumTotal = makeLabel(row, &font_num_44, COL_TEXT, "");
+  lv_obj_t *unit = makeLabel(row, &lv_font_montserrat_24, COL_MUTED, "kWh");
+  lv_obj_set_style_pad_left(unit, 6, 0);
+  sumTimes = makeLabel(card, &lv_font_montserrat_16, COL_MUTED, "");
+  lv_obj_align(sumTimes, LV_ALIGN_TOP_MID, 0, 108);
+
+  lv_obj_t *div = makeFilledBox(card, COL_BORDER, 0);
+  lv_obj_set_pos(div, 20, 142);
+  lv_obj_set_size(div, SUM_W - 40, 1);
+  lv_obj_t *houseIcon;
+  sumBattValue  = makeSummaryCell(card, 20, makeBattIcon, COL_CHARGE, "Battery", &sumBattIcon);
+  sumHouseValue = makeSummaryCell(card, 160, makeHouseIcon, COL_HOME, "House", &houseIcon);
+
+  lv_obj_t *hint = makeLabel(card, &lv_font_montserrat_14, COL_MUTED, "tap to close");
+  lv_obj_set_style_text_color(hint, tint(COL_MUTED, COL_CARD, 128), 0);
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+  lv_obj_add_flag(summary, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void buildBattery(lv_obj_t *scr) {
@@ -419,6 +497,7 @@ void buildUi() {
   buildFreeHour(scr);
   buildBattery(scr);
   buildStrip(scr);
+  buildFreeSummary(scr);
   buildOverlay(scr);
   layoutTopBar();
 }
@@ -707,7 +786,6 @@ static void showSecsLeft(int secs) {
     char d[2] = { (char)('0' + digits[i]), 0 };
     lv_label_set_text(cdDigits[i], d);
   }
-  lv_bar_set_value(freeBar, secs, LV_ANIM_OFF);
 }
 
 // The pending-release look only shows on the home screen.
@@ -729,7 +807,7 @@ void showReleasePending(bool on) {
 static void setFreeHourMode(bool on) {
   freeHour = on;
   for (lv_obj_t *o : { chargeBtn, freeBtn, mixBar }) setVisible(o, !on);
-  for (lv_obj_t *o : { closeBtn, freeTitle, freeBar, freeCountdown }) setVisible(o, on);
+  for (lv_obj_t *o : { closeBtn, freeTitle, freeKwhTile, freeKwhRow, freeCountdown }) setVisible(o, on);
   showPendingRelease();
 
   // hero tile moves right of the close button and shows the grid; strip shows the house
@@ -761,7 +839,9 @@ static void onFreeHourOpen(lv_event_t *e) {
   localtime_r(&tv.tv_sec, &t);
   uint32_t msLeft = (3600 - (t.tm_min * 60 + t.tm_sec)) * 1000UL - tv.tv_usec / 1000;
   freeHourEndMs = millis() + msLeft;
+  freeStartedAt = tv.tv_sec;
   shownSecsLeft = -1;
+  lv_label_set_text(freeKwhValue, "-.-");  // until the plant's counters have been read
   showSecsLeft((msLeft + 999) / 1000);
   setFreeHourMode(true);
   Serial.printf("Free hour started, %lu s to go\n", (unsigned long)(msLeft / 1000));
@@ -769,6 +849,7 @@ static void onFreeHourOpen(lv_event_t *e) {
 }
 
 static void endFreeHour() {
+  freeEndedAt = time(nullptr);
   setFreeHourMode(false);
   Serial.println("Free hour ended");
   applyFreeHourMode(false);
@@ -786,4 +867,33 @@ void updateCountdown() {
     return;
   }
   showSecsLeft((msLeft + 999) / 1000);
+}
+
+// Whole kWh from 10 up, like the hero.
+static void showKwh(lv_obj_t *label, float kwh) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), kwh >= 9.95f ? "%.0f" : "%.1f", kwh);
+  lv_label_set_text(label, buf);
+}
+
+void showFreeHourEnergy(const FreeHourEnergy &e) {
+  if (freeHour) showKwh(freeKwhValue, e.gridKwh);
+}
+
+void showFreeHourSummary(const FreeHourEnergy &e) {
+  showKwh(sumTotal, e.gridKwh);
+  showKwh(sumBattValue, e.battKwh);
+  showKwh(sumHouseValue, e.houseKwh);
+  setBattIconLevel(sumBattIcon, (int)lroundf(reading.socPct));
+  char from[8], to[8], buf[24];
+  struct tm t;
+  strftime(from, sizeof(from), "%H:%M", localtime_r(&freeStartedAt, &t));
+  strftime(to, sizeof(to), "%H:%M", localtime_r(&freeEndedAt, &t));
+  snprintf(buf, sizeof(buf), "%s - %s", from, to);
+  lv_label_set_text(sumTimes, buf);
+  lv_obj_remove_flag(summary, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void onSummaryClose(lv_event_t *e) {
+  lv_obj_add_flag(summary, LV_OBJ_FLAG_HIDDEN);
 }

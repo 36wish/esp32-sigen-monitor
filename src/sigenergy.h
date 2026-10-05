@@ -20,6 +20,14 @@ static const uint16_t ESS_POWER_REG   = 30037;  // S32, W; positive = charging
 static const uint16_t LIVE_BLOCK_START = GRID_POWER_REG;
 static const uint16_t LIVE_BLOCK_COUNT = ESS_POWER_REG + 2 - LIVE_BLOCK_START;  // 30005 .. 30038
 
+// Lifetime energy counters (U64, kWh*100), read as one block to total up a
+// free hour. Checked on the plant: they step by 0.01 kWh about every 5 s.
+static const uint16_t ESS_CHARGED_TOTAL_REG = 30200;  // into the battery
+static const uint16_t GRID_IMPORT_TOTAL_REG = 30216;
+static const uint16_t LOAD_TOTAL_REG        = 30228;  // house load, from every source
+static const uint16_t ENERGY_BLOCK_START = ESS_CHARGED_TOTAL_REG;
+static const uint16_t ENERGY_BLOCK_COUNT = LOAD_TOTAL_REG + 4 - ENERGY_BLOCK_START;  // 30200 .. 30231
+
 // Charge button
 static const uint16_t BACKUP_SOC_REG = 40046;  // RW U16, %*10
 
