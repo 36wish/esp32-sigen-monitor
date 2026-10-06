@@ -585,8 +585,13 @@ static void showSourceMix(float homeKw) {
   float fromSolar = fminf(homeKw, fmaxf(reading.pvKw, 0));
   float fromBatt  = fminf(homeKw - fromSolar, fmaxf(-reading.essKw, 0));
   float fromGrid  = fmaxf(homeKw - fromSolar - fromBatt, 0);
-  if (homeKw > IDLE_KW) setMixShares(fromSolar / homeKw, fromGrid / homeKw, fromBatt / homeKw);
-  else                  setMixShares(0, 0, 0);
+  // a source that reads "0.0" in the strip gets no segment; the rest fill the bar
+  if (fromSolar < IDLE_KW) fromSolar = 0;
+  if (fromBatt  < IDLE_KW) fromBatt  = 0;
+  if (fromGrid  < IDLE_KW) fromGrid  = 0;
+  float total = fromSolar + fromBatt + fromGrid;
+  if (homeKw > IDLE_KW && total > 0) setMixShares(fromSolar / total, fromGrid / total, fromBatt / total);
+  else                               setMixShares(0, 0, 0);
 }
 
 // ── flow glow ────────────────────────────────────────────────────────────
