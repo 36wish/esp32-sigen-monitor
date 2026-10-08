@@ -4,7 +4,8 @@ same white glow that reads on green almost disappears. Green stays as it is.
 
   glow        as in band_variants.py, the same everywhere (peak 32%)
   glow+       yellow/red peak 50%
-  glow++      yellow/red peak 65%, a bit narrower
+  glow++      yellow/red peak 65%, 52 px high, ONE wave at a time (period = fill
+              height); the firmware's look, and it applies to green too
   glow+ edge  glow+ with faint dark shoulders either side, for contrast
 
 Writes overview.webp and home-<variant>.webp (full screen, yellow, discharging).
@@ -36,7 +37,7 @@ def by_colour(other):
 GLOWS = [
     ("glow",       GREEN),
     ("glow+",      by_colour(band(glow(40, 0.50), period=64))),
-    ("glow++",     by_colour(band(glow(34, 0.65), period=64))),
+    ("glow++",     band(glow(52, 0.65), sweep_gap=0)),
     ("glow+ edge", by_colour(band(glow_edge(36, 0.50, 12, 0.12), period=64))),
 ]
 GLOW_STATES = [(76, 4.5), (45, 0.6), (32, -1.5), (18, -0.9)]   # green, yellow, yellow, red

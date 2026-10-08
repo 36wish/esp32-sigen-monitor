@@ -37,10 +37,9 @@ static const int BATT_FILL_MAX_H = BATT_INNER_H - 2 * BATT_INSET;
 // charging and down while discharging, faster the more power flows. Each band
 // is two gradient boxes, transparent -> peak -> transparent. The peak is
 // bright enough to show on the light yellow and red fills too.
-static const int      GLOW_PERIOD = 64;   // px from one band to the next
-static const int      GLOW_W      = 34;   // band height
+static const int      GLOW_W      = 52;   // band height (even: two halves)
 static const lv_opa_t GLOW_PEAK   = 166;  // 65%
-static const int      GLOW_BANDS  = (BATT_FILL_MAX_H + GLOW_W / 2) / GLOW_PERIOD + 2;
+static const int      GLOW_BANDS  = 1;    // one wave at a time: the next starts once this one has crossed the fill
 static const float   GLOW_SPEED_BASE = 12, GLOW_SPEED_PER_KW = 16, GLOW_SPEED_MAX = 90;  // px/s
 static const uint32_t GLOW_TICK_MS   = 33;
 
@@ -135,7 +134,7 @@ static time_t       freeStartedAt = 0, freeEndedAt = 0;  // wall clock, for the 
 
 // Flow glow (see GLOW_*): set by showBattery(), run by glowTick().
 static float    glowSpeed = 0;     // px/s, positive = up (charging), 0 = still
-static float    glowPhase = 0;     // px, 0..GLOW_PERIOD
+static float    glowPhase = 0;     // px, 0..fill height
 static int      glowFillH = 0;
 static int      glowShownPx = -1;   // phase in whole px last placed, -1 = hidden
 static bool     glowDirty = true;   // fill changed: place again
@@ -571,12 +570,11 @@ static void setMixShares(float solar, float grid, float batt) {
   }
 }
 
-// Big number: house load, or grid import during free hour. Whole kW from 10
-// up so "12.0 kW" doesn't run into the buttons.
+// Big number: house load, or grid import during free hour. Always 1 dp.
 static void showHero(float homeKw) {
   float kw = freeHour ? fmaxf(reading.gridKw, 0) : homeKw;
   char buf[16];
-  snprintf(buf, sizeof(buf), kw >= 9.95f ? "%.0f" : "%.1f", kw);
+  snprintf(buf, sizeof(buf), "%.1f", kw);
   lv_label_set_text(heroValue, buf);
 }
 
@@ -605,8 +603,11 @@ static void hideGlow() {
   }
 }
 
-// Places the bands for the current phase. The crests sit GLOW_PERIOD apart,
-// the first one at or above the top of the fill.
+// The wave crosses the whole fill, then starts again at the other end.
+static float glowPeriod() { return fmaxf(glowFillH, 1); }
+
+// Places the wave for the current phase: its crest runs from the bottom of
+// the fill (phase 0) to the top (phase = fill height).
 static void placeGlow() {
   int px = (int)glowPhase;
   if (px == glowShownPx && !glowDirty) return;
@@ -617,7 +618,7 @@ static void placeGlow() {
   float edge = fminf(10, glowFillH / 5.0f);
   for (int k = 0; k < GLOW_BANDS; k++) {
     GlowBand &b = glowBands[k];
-    int crest = k * GLOW_PERIOD - px;
+    int crest = glowFillH - px + k * glowFillH;
     float fade = edge > 0 ? fminf(crest, glowFillH - crest) / edge : 0;
     lv_opa_t opa = (lv_opa_t)(GLOW_PEAK * fminf(fmaxf(fade, 0), 1));
     setVisible(b.rise, opa > 0);
@@ -643,8 +644,9 @@ static void glowTick(lv_timer_t *t) {
     hideGlow();
     return;
   }
-  glowPhase = fmodf(glowPhase + glowSpeed * dt, GLOW_PERIOD);
-  if (glowPhase < 0) glowPhase += GLOW_PERIOD;
+  float period = glowPeriod();
+  glowPhase = fmodf(glowPhase + glowSpeed * dt, period);
+  if (glowPhase < 0) glowPhase += period;
   placeGlow();
 }
 

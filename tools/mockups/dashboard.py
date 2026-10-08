@@ -108,7 +108,7 @@ def hero(c, tile_icon, tile_col, kw, num=TEXT, tile=TILE, text=None):
     tbg = mix(tile_col, CARD, 0.16)
     c.rrect(x, y, x + t, y + t, 10, fill=tbg)
     tile_icon(c, x + t / 2, y + t / 2, 22, tile_col, tbg)
-    value = text or (f"{kw:.0f}" if kw >= 9.95 else f"{kw:.1f}")
+    value = text or f"{kw:.1f}"
     w = text_sx(c, HERO_X, HERO_BASE, value, 144, num)
     c.text(HERO_X + w + 8, HERO_BASE, "kW", 24, MUTED, "r", "ls")
 
