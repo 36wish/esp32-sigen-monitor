@@ -131,6 +131,10 @@ bool scanForPlant(IPAddress &ip) {
   uint32_t scanStart = millis();
   int h = 1;
   while (h <= 254) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi dropped, scan stopped");
+      return false;
+    }
     IPAddress batch[SCAN_PARALLEL];
     int n = 0;
     for (; h <= 254 && n < SCAN_PARALLEL; h++) {

@@ -31,6 +31,10 @@ void plantBegin();
 // Opens the link. LVGL keeps running while the port is checked.
 bool plantConnect(IPAddress ip);
 
+// Closes the link, e.g. before WiFi is restarted. Anything queued is sent
+// after the next plantConnect().
+void plantDisconnect();
+
 // Sends the one request that's due; call it every POLL_INTERVAL_MS. Returns
 // false if the link failed: it's been closed, and anything queued is sent
 // after the next plantConnect().
