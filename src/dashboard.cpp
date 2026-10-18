@@ -2,6 +2,7 @@
 
 #include <initializer_list>
 #include <math.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #include "display.h"
@@ -87,7 +88,8 @@ static lv_obj_t *timeLabel, *ipLabel, *reconnectIcon;
 static lv_obj_t *overlay, *overlayLabel;
 
 static lv_obj_t *heroTile, *heroHouseIcon, *heroGridIcon;
-static lv_obj_t *heroValue;
+static lv_obj_t *heroInt, *heroFrac;
+static int heroDecimalX;  // fixed x of the decimal point; see buildHero()
 static lv_obj_t *mixBar, *mixSolar, *mixGrid, *mixBatt;
 
 static lv_obj_t *battNub, *battBody, *battFill;
@@ -210,6 +212,14 @@ static void layoutTopBar() {
   lv_obj_align_to(reconnectIcon, timeLabel, LV_ALIGN_OUT_LEFT_TOP, -(IP_GAP - SPINNER_SIZE) / 2, 0);
 }
 
+// Right-aligns the hero's integer part so its last digit always ends at
+// heroDecimalX, whatever its width.
+static void setHeroInt(const char *text) {
+  lv_label_set_text(heroInt, text);
+  lv_obj_update_layout(heroInt);
+  lv_obj_set_x(heroInt, heroDecimalX - lv_obj_get_width(heroInt));
+}
+
 // Current house load (grid import during free hour; setFreeHourMode() swaps
 // the tile's icons).
 static void buildHero(lv_obj_t *scr) {
@@ -223,11 +233,22 @@ static void buildHero(lv_obj_t *scr) {
   setIconColor(heroGridIcon, COL_IMPORT);
   lv_obj_add_flag(heroGridIcon, LV_OBJ_FLAG_HIDDEN);
 
-  lv_obj_t *row = makeValueRow(scr, HERO_X, HERO_Y);
-  heroValue = makeLabel(row, &font_hero_144, COL_TEXT, "-.-");
+  // The integer part right-aligns to a fixed decimal point so the value
+  // doesn't jump around when free hour's grid import crosses into double
+  // digits (assume up to "1x.x" kW). heroDecimalX is measured from "14",
+  // the widest two-digit case, rather than hardcoded, so it tracks the font.
+  heroInt = makeLabel(scr, &font_hero_144, COL_TEXT, "14");
+  lv_obj_set_pos(heroInt, HERO_X, HERO_Y);
+  lv_obj_update_layout(heroInt);
+  heroDecimalX = HERO_X + lv_obj_get_width(heroInt);
+
+  lv_obj_t *row = makeValueRow(scr, heroDecimalX, HERO_Y);
+  heroFrac = makeLabel(row, &font_hero_144, COL_TEXT, ".-");
   lv_obj_t *unit = makeLabel(row, &lv_font_montserrat_24, COL_MUTED, "kW");
   lv_obj_set_style_pad_left(unit, 8, 0);
   lv_obj_set_style_pad_bottom(unit, 9, 0);  // baseline-align with the 144px value
+
+  setHeroInt("-");
 }
 
 // Source mix: segmented bar, always solar | grid | battery left to right.
@@ -570,12 +591,22 @@ static void setMixShares(float solar, float grid, float batt) {
   }
 }
 
-// Big number: house load, or grid import during free hour. Always 1 dp.
+// Big number: house load, or grid import during free hour. Always 1 dp, split
+// at the decimal point so the integer part can right-align (see setHeroInt()).
 static void showHero(float homeKw) {
   float kw = freeHour ? fmaxf(reading.gridKw, 0) : homeKw;
   char buf[16];
   snprintf(buf, sizeof(buf), "%.1f", kw);
-  lv_label_set_text(heroValue, buf);
+  char frac[3] = ".-";
+  char *dot = strchr(buf, '.');
+  if (dot) {
+    frac[0] = '.';
+    frac[1] = dot[1];
+    frac[2] = '\0';
+    *dot = '\0';
+  }
+  setHeroInt(buf);
+  lv_label_set_text(heroFrac, frac);
 }
 
 // Where the house load is coming from.
@@ -755,7 +786,9 @@ void updateClock() {
   layoutTopBar();
 
   bool offPeak = t.tm_hour >= OFFPEAK_START_HOUR || t.tm_hour < OFFPEAK_END_HOUR;
-  lv_obj_set_style_text_color(heroValue, lv_color_hex(offPeak ? COL_OFFPEAK : COL_TEXT), 0);
+  lv_color_t heroCol = lv_color_hex(offPeak ? COL_OFFPEAK : COL_TEXT);
+  lv_obj_set_style_text_color(heroInt, heroCol, 0);
+  lv_obj_set_style_text_color(heroFrac, heroCol, 0);
 }
 
 // ── modes ────────────────────────────────────────────────────────────────
