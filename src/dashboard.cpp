@@ -88,8 +88,9 @@ static lv_obj_t *timeLabel, *ipLabel, *reconnectIcon;
 static lv_obj_t *overlay, *overlayLabel;
 
 static lv_obj_t *heroTile, *heroHouseIcon, *heroGridIcon;
-static lv_obj_t *heroInt, *heroFrac;
-static int heroDecimalX;  // fixed x of the decimal point; see buildHero()
+static lv_obj_t *heroInt, *heroFrac, *heroFracRow;
+// Fixed x of the decimal point, home screen vs. free hour; see buildHero().
+static int heroDecimalXHome, heroDecimalXFree;
 static lv_obj_t *mixBar, *mixSolar, *mixGrid, *mixBatt;
 
 static lv_obj_t *battNub, *battBody, *battFill;
@@ -213,11 +214,19 @@ static void layoutTopBar() {
 }
 
 // Right-aligns the hero's integer part so its last digit always ends at
-// heroDecimalX, whatever its width.
-static void setHeroInt(const char *text) {
+// decimalX, whatever its width.
+static void setHeroInt(const char *text, int decimalX) {
   lv_label_set_text(heroInt, text);
   lv_obj_update_layout(heroInt);
-  lv_obj_set_x(heroInt, heroDecimalX - lv_obj_get_width(heroInt));
+  lv_obj_set_x(heroInt, decimalX - lv_obj_get_width(heroInt));
+}
+
+// Measures how wide font_hero_144 renders a digit string, for picking a
+// fixed decimal-point x without hardcoding pixel widths by hand.
+static int heroDigitsWidth(const char *digits) {
+  lv_label_set_text(heroInt, digits);
+  lv_obj_update_layout(heroInt);
+  return lv_obj_get_width(heroInt);
 }
 
 // Current house load (grid import during free hour; setFreeHourMode() swaps
@@ -234,21 +243,22 @@ static void buildHero(lv_obj_t *scr) {
   lv_obj_add_flag(heroGridIcon, LV_OBJ_FLAG_HIDDEN);
 
   // The integer part right-aligns to a fixed decimal point so the value
-  // doesn't jump around when free hour's grid import crosses into double
-  // digits (assume up to "1x.x" kW). heroDecimalX is measured from "14",
-  // the widest two-digit case, rather than hardcoded, so it tracks the font.
-  heroInt = makeLabel(scr, &font_hero_144, COL_TEXT, "14");
+  // doesn't jump around as its digit count changes: the home screen's house
+  // load against "4.4" (the widest realistic single-digit case, as the
+  // mockups assume), free hour's grid import against "14.4" (it can reach
+  // double digits). Both are measured, not hardcoded, so they track the font.
+  heroInt = makeLabel(scr, &font_hero_144, COL_TEXT, "");
   lv_obj_set_pos(heroInt, HERO_X, HERO_Y);
-  lv_obj_update_layout(heroInt);
-  heroDecimalX = HERO_X + lv_obj_get_width(heroInt);
+  heroDecimalXHome = HERO_X + heroDigitsWidth("4");
+  heroDecimalXFree = HERO_X + heroDigitsWidth("14");
 
-  lv_obj_t *row = makeValueRow(scr, heroDecimalX, HERO_Y);
-  heroFrac = makeLabel(row, &font_hero_144, COL_TEXT, ".-");
-  lv_obj_t *unit = makeLabel(row, &lv_font_montserrat_24, COL_MUTED, "kW");
+  heroFracRow = makeValueRow(scr, heroDecimalXHome, HERO_Y);
+  heroFrac = makeLabel(heroFracRow, &font_hero_144, COL_TEXT, ".-");
+  lv_obj_t *unit = makeLabel(heroFracRow, &lv_font_montserrat_24, COL_MUTED, "kW");
   lv_obj_set_style_pad_left(unit, 8, 0);
   lv_obj_set_style_pad_bottom(unit, 9, 0);  // baseline-align with the 144px value
 
-  setHeroInt("-");
+  setHeroInt("-", heroDecimalXHome);
 }
 
 // Source mix: segmented bar, always solar | grid | battery left to right.
@@ -605,7 +615,9 @@ static void showHero(float homeKw) {
     frac[2] = '\0';
     *dot = '\0';
   }
-  setHeroInt(buf);
+  int decimalX = freeHour ? heroDecimalXFree : heroDecimalXHome;
+  setHeroInt(buf, decimalX);
+  lv_obj_set_x(heroFracRow, decimalX);
   lv_label_set_text(heroFrac, frac);
 }
 
