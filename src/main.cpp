@@ -8,7 +8,8 @@
  * First build: copy include/secrets.h.example to include/secrets.h and
  * fill in your WiFi SSID/password. Other settings are in include/settings.h.
  *
- * This file boots the board and runs the connection state machine. The rest:
+ * This file boots the board and runs the connection state machine, which also
+ * gets the link back by itself (see checkLink()). The rest:
  *   discovery.cpp          finds the plant on the LAN (cached IP, then a /24 scan)
  *   plant.cpp              the connected plant: live poll, Charge and Free hour requests
  *   modbus_tcp.cpp         minimal Modbus TCP client
@@ -19,12 +20,14 @@
  *   display.cpp            LVGL pump, auto-brightness, screen off in the dark
  *   touch_calibration.cpp  on-screen touch calibration
  *   status_led.cpp         RGB status LED (off unless STATUS_LED is set)
+ *   diagnostics.cpp        connection diagnostics on the serial port, self-restart record
  *   storage.h              NVS keys
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include "dashboard.h"
+#include "diagnostics.h"
 #include "discovery.h"
 #include "display.h"
 #include "plant.h"
@@ -51,8 +54,39 @@ static IPAddress plantIp;
 static const uint32_t SCAN_RETRY_MS    = 30000;
 static const uint32_t CONNECT_RETRY_MS = 1000;
 
+// Getting the link back without a power cycle (checkLink()).
+static const uint32_t WIFI_LOST_MS        = 10000;   // WiFi down this long: restart it ourselves...
+static const uint32_t WIFI_RETRY_MS       = 30000;   // ...and again this often until it connects
+static const uint32_t NO_REPLY_WIFI_MS    = 120000;  // plant silent this long: restart WiFi even if it says connected
+static const uint32_t NO_REPLY_RESTART_MS = 600000;  // ...and this long: restart the ESP (not during a free hour)
+static const uint32_t STATUS_LOG_MS       = 600000;  // status line on the serial port
+
+static uint32_t wifiBegunAt = 0;   // last WiFi.begin()
+static bool     wifiDown = false;  // WiFi lost outside ST_WIFI...
+static uint32_t wifiDownAt = 0;    // ...since this
+static uint32_t lastReplyAt = 0;   // the plant last answered a request
+static bool     linkDown = false;  // it hasn't since the link dropped
+
 static bool timeReached(uint32_t t) {
   return (int32_t)(millis() - t) >= 0;
+}
+
+static const char *stateName(AppState s) {
+  switch (s) {
+    case ST_WIFI:       return "wifi";
+    case ST_LOAD_CACHE: return "load cache";
+    case ST_SCAN:       return "scan";
+    case ST_WAIT_RETRY: return "wait retry";
+    case ST_CONNECT:    return "connect";
+    case ST_POLL:       return "poll";
+  }
+  return "?";
+}
+
+// `what`, with the state and how long the plant has been silent, for logStatus().
+static String linkEvent(const char *what) {
+  return String(what) + " [" + stateName(state) + ", last reply " + String((millis() - lastReplyAt) / 1000) +
+         "s ago]";
 }
 
 static void retryAfter(uint32_t ms, AppState next) {
@@ -85,10 +119,67 @@ static void pollSerial() {
     if (c == '\n' || c == '\r') {
       line[len] = 0;
       if (strcmp(line, "cal") == 0) startTouchCalibration();
+      if (strcmp(line, "diag") == 0) printDiagnostics(linkEvent("Diagnostics"));
       len = 0;
     } else if (len < (int)sizeof(line) - 1) {
       line[len++] = c;
     }
+  }
+}
+
+static void beginWifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);  // modem sleep adds 100ms+ latency, which made LAN probes time out
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  wifiBegunAt = millis();
+}
+
+// Turns the radio off and on again and reconnects, as a power cycle would.
+// That also clears a link that still says connected but passes nothing, where
+// WiFi.begin() on its own does nothing. The arduino-esp32 2.0.x auto-reconnect
+// doesn't retry after every kind of disconnect, so this is what brings WiFi
+// back.
+static void restartWifi(const char *why) {
+  logStatus(linkEvent(why));
+  plantDisconnect();
+  WiFi.disconnect(true);  // radio off
+  beginWifi();
+  wifiDown = false;
+  linkDown = true;
+  state = ST_WIFI;
+  showStatus("Reconnecting to WiFi\n\"" WIFI_SSID "\"...");
+}
+
+// Gets the link back without a power cycle: restarts WiFi when it has been
+// down a while, or when the plant has stopped answering although WiFi says it's
+// connected, and restarts the ESP when the plant has been silent for longer
+// still. A restart would end a free hour (plantBegin() hands remote EMS back),
+// so it waits until the free hour is over.
+static void checkLink() {
+  uint32_t now = millis();
+  bool connected = WiFi.status() == WL_CONNECTED;
+  if (state == ST_WIFI) {
+    if (!connected && now - wifiBegunAt >= WIFI_RETRY_MS) restartWifi("WiFi still not connected, restarting it");
+  } else if (!connected) {
+    if (!wifiDown) {
+      wifiDown = true;
+      wifiDownAt = now;
+      logStatus(linkEvent("WiFi lost"));
+    } else if (now - wifiDownAt >= WIFI_LOST_MS) {
+      restartWifi("WiFi still lost, restarting it");
+    }
+  } else {
+    wifiDown = false;
+    if (now - lastReplyAt >= NO_REPLY_WIFI_MS && now - wifiBegunAt >= NO_REPLY_WIFI_MS)
+      restartWifi("Plant silent though WiFi is connected, restarting WiFi");
+  }
+  if (now - lastReplyAt >= NO_REPLY_RESTART_MS && !freeHourOn())
+    restartWithRecord(linkEvent("Plant silent too long, restarting the ESP"));
+
+  static uint32_t lastStatusLog = 0;
+  if (now - lastStatusLog >= STATUS_LOG_MS) {
+    lastStatusLog = now;
+    logStatus(linkEvent("Status"));
   }
 }
 
@@ -98,6 +189,7 @@ void setup() {
 
   displayBegin();
   prefs.begin(NVS_NAMESPACE, false);
+  diagnosticsBegin();
   touchCalibrationBegin();
   plantBegin();
   buildUi();
@@ -105,9 +197,8 @@ void setup() {
   showStatus("Connecting to WiFi\n\"" WIFI_SSID "\"...");
 
   Serial.printf("Connecting to WiFi \"%s\"...\n", WIFI_SSID);
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // modem sleep adds 100ms+ latency, which made LAN probes time out
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  beginWifi();
+  lastReplyAt = millis();  // the no-reply timeouts count from boot
 }
 
 void loop() {
@@ -122,6 +213,7 @@ void loop() {
   updateCountdown();
   updateTouchCalibration();
   pollSerial();
+  checkLink();
 
   switch (state) {
     case ST_WIFI:
@@ -171,8 +263,17 @@ void loop() {
 
     case ST_POLL:
       if (!timeReached(nextActionAt)) break;
-      if (plantTurn()) nextActionAt = millis() + POLL_INTERVAL_MS;
-      else             state = ST_CONNECT;  // link dropped; queued requests wait for the reconnect
+      if (plantTurn()) {
+        if (linkDown) logStatus(linkEvent("Plant answering again"));
+        linkDown = false;
+        lastReplyAt = millis();
+        nextActionAt = millis() + POLL_INTERVAL_MS;
+      } else {
+        // link dropped; queued requests wait for the reconnect
+        logStatus(linkEvent("Link to the plant dropped"));
+        linkDown = true;
+        state = ST_CONNECT;
+      }
       break;
   }
 }

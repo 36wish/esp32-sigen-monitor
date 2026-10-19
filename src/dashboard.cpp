@@ -861,6 +861,10 @@ static void setFreeHourMode(bool on) {
   if (haveData) updateUi();
 }
 
+bool freeHourOn() {
+  return freeHour;
+}
+
 // Counts down to the top of the current hour by the wall clock. While a
 // release is pending, a tap sends it again instead.
 static void onFreeHourOpen(lv_event_t *e) {

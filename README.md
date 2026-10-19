@@ -39,6 +39,7 @@ The display connects over WiFi, finds the Sigenergy system on the network by its
 
   *Off-peak: after 21:00 the big number is grey. Here the house is running entirely from the grid.*
 - **Finds the system by itself.** On first boot it scans your home network  for the system. It will save the IP address so it can connect later without rescanning.
+- **Reconnects by itself.** If WiFi drops, it restarts WiFi and keeps trying until it's back. If the system stops answering for 2 minutes, it restarts WiFi even when the connection looks fine, and after 10 minutes it restarts itself (but not during a free hour). Type `diag` in a serial monitor (115200 baud) to see the connection state and why it last restarted itself.
 - **Auto-brightness.** The screen adjusts brightness according to room light level, and will switch off when th eroom is completely dark.
 
 ## Hardware
@@ -174,6 +175,7 @@ src/theme.h                colours and custom fonts
 src/display.cpp            backlight: auto-brightness, screen off in the dark
 src/touch_calibration.cpp  on-screen touch calibration
 src/status_led.cpp         optional RGB status LED
+src/diagnostics.cpp        connection diagnostics on the serial port
 src/storage.h              keys for what's saved on the device
 src/font_hero_144.c        custom font for the big number (digits only)
 src/font_num_44.c          custom font for secondary numbers and the countdown

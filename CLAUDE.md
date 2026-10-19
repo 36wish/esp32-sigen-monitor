@@ -49,9 +49,16 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 | `display.cpp` | LVGL pump (`pumpLvgl()`/`waitTick()`), auto-brightness, screen off in the dark |
 | `touch_calibration.cpp` | on-screen touch calibration |
 | `status_led.cpp` | RGB status LED (off unless `STATUS_LED`) |
+| `diagnostics.cpp` | connection diagnostics on the serial port, the self-restart record, `diag` |
 | `storage.h` | NVS keys |
 
 - **App loop:** a non-blocking state machine in `loop()`, `ST_WIFI → ST_LOAD_CACHE → ST_SCAN → ST_CONNECT → ST_POLL`, with `ST_WAIT_RETRY` between failed attempts. Long operations call `waitTick()`/`pumpLvgl()` so touch and redraws stay responsive. Don't add blocking delays.
+- **Getting the link back:** `checkLink()` (main.cpp) runs every loop, so the monitor never needs a power cycle. arduino-esp32 2.0.x doesn't auto-reconnect after every kind of WiFi disconnect, and a link can also keep saying `WL_CONNECTED` while passing nothing.
+  - WiFi down for `WIFI_LOST_MS` (10 s) outside `ST_WIFI`: `restartWifi()` turns the radio off and on, closes the plant link and goes back to `ST_WIFI`, which tries again every `WIFI_RETRY_MS` (30 s) until it connects. `scanForPlant()` stops as soon as WiFi drops.
+  - The plant silent for `NO_REPLY_WIFI_MS` (2 min) while WiFi says connected: `restartWifi()` too, at most once per 2 min.
+  - The plant silent for `NO_REPLY_RESTART_MS` (10 min): `restartWithRecord()` restarts the ESP, except while free hour is on (`freeHourOn()`), since `plantBegin()` would hand remote EMS back at boot and end it.
+  - "Silent" counts from boot or from the last request the plant answered (an exception counts as an answer).
+  - **Diagnostics** (diagnostics.cpp): every link event (link dropped, WiFi lost, WiFi restarted, plant answering again, and a status line every 10 min) logs the state, how long the plant has been silent, the time, WiFi status, IP, RSSI, WiFi disconnects with the last reason code, and free/min/largest heap. Before a self-restart that line goes to NVS (`rstwhy`, with a count in `rstcnt`). The boot log prints it with the reset reason, and so does `diag` on the serial port.
 - **Finding the plant:** first it tries the IP cached in NVS (`Preferences` namespace `sigmon`, opened in `setup()`; key `ip`; every key is listed in `storage.h`). If that fails, it scans the /24 subnet in parallel for port 502. Each candidate, the cached IP included, has to answer a read of the live block in a way that looks like a Sigenergy plant: a non-zero rated power (`30010`, u32 W) and an SOC of at most 100%. Any Modbus device can answer the read, and whatever is accepted gets the Charge and Free hour writes, so `probePlant()` logs the candidates it turns down.
 - **Modbus client:** a minimal hand-written Modbus TCP client (slave 247): reads with FC 0x03 (`readPlantRegs()` falls back to 0x04 for the plant's RW registers), writes single registers with FC 0x06, and can write U32s with FC 0x10 (`modbusWriteU32()`, high word first; nothing uses it at the moment). Each request gets a new transaction ID. A reply has to echo it and the unit ID, carry protocol ID 0, and have an MBAP length that fits the reply; anything else is `MB_FAIL`, which drops the link. Each poll reads registers 30005–30038 as one block:
   - `30005` grid power (s32; positive = import)

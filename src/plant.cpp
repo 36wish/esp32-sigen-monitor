@@ -68,6 +68,10 @@ bool plantConnect(IPAddress ip) {
   return true;
 }
 
+void plantDisconnect() {
+  client.stop();
+}
+
 void applyChargeMode(bool on) {
   pendingReserve = on ? CHARGE_ON_SOC : CHARGE_OFF_SOC;
 }

@@ -22,6 +22,9 @@ void showReading(const PlantReading &r);
 void showChargeOn(bool on);
 bool chargeButtonOn();
 
+// True while the free-hour screen is up.
+bool freeHourOn();
+
 // Free hour is over but the plant refused the remote EMS release, so it's
 // still charging from the grid: the Free hour button stays pressed in with a
 // red badge (a tap sends the release again) and a red title shows.
