@@ -71,7 +71,8 @@ pio run -t upload        # flash: hold BOOT, tap RESET first (see below)
 - **Derived values:** `updateUi()` calculates house load as `pv + grid - ess`.
 - **UI:** `buildUi()` builds the screen once, one `build*()` per region in back-to-front order (later widgets draw on top), and `updateUi()`/`updateClock()` change it in place.
   - Everything is **absolute pixel coordinates** on 480x320. Layout constants (`BATT_*`, `MIX_*`, `HERO_*`, `TILE_*`, `MODE_BTN_*`) are at the top of dashboard.cpp, the palette (`COL_*`) in theme.h.
-  - Icons are drawn from LVGL lines and boxes (`make*Icon` in widgets.cpp) rather than images.
+  - Icons are drawn from LVGL lines and boxes (`make*Icon` in widgets.cpp) rather than images. The one exception is the Charge button's solid lightning bolt. LVGL 9.2 has no polygon, and triangles that share an edge leave an anti-aliasing seam along it, so `fillPolygonMask()` fills the polygon into an A8 mask once, and an `lv_image` draws it in its `image_recolor` (set by `setIconColor()`).
+  - The clock (Free hour button and summary card) is a solid face with its hands cut out, drawn in the colour behind it. So it's coloured with `setClockIconColor(icon, face, cutout)`, not `setIconColor()`. On the button, `setFreeIconColor()` uses the colour half way down the button's gradient, normal or pressed in.
   - **Top bar:** the clock is sized to its text and right-anchored. `layoutTopBar()` runs whenever the time changes and keeps the plant IP `IP_GAP` px to the clock's left, with the reconnect spinner centred in the gap.
   - **Off-peak:** from `OFFPEAK_START_HOUR` until `OFFPEAK_END_HOUR` (21:00–07:00, the cheaper overnight rate), `updateClock()` draws the hero number in `COL_OFFPEAK` grey. Nothing else changes colour.
   - A full-screen overlay covers the dashboard while connecting or scanning. Once data has arrived, a reconnect only shows a spinner, and the last readings stay on screen.
@@ -133,5 +134,8 @@ UI changes are mocked up as PNGs before any code is written. The scripts are in 
 - **`band_variants.py`** has variations on look A: glint, glow, sawtooth, swell, sweep and sheen. Each one is a brightness profile behind the band's crest, with an optional tilt or single sweep.
 - **`free_kwh.py`** renders the ways of showing a free hour's kWh. During it: A in the header, B beside the hero, C in the countdown row. After it: D a summary card, E a recap beside the hero tile. C and D are implemented (drawn by `dashboard.py`); A, B and E were rejected.
 - **`glow_variants.py`** makes the glow stronger on the lighter yellow (20–49%) and red (<20%) fills, in three strengths: glow+, glow++ and glow+ edge. Green keeps the plain glow. glow++ is the one implemented (see Flow glow above); it's now 52 px high with one wave at a time (`sweep_gap=0`) and drawn for green too.
+
+- **`storm_icon.py`** renders thicker bolts for the Charge button's thundercloud: A a 5 px line, B a solid bolt, C a bigger bolt cut out of the cloud, D a taller 32x44 icon. **`storm_b_variants.py`** has variations on B: bold, big, tucked, upright, small cloud and soft. B4 (upright) is the one implemented; `icon_storm()` in `dashboard.py` draws it.
+- **`clock_icon.py`** renders bolder clocks for the Free hour button and the summary card: A 3 px strokes, B 3 px at 28 px, C a 4 px ring, D a solid 28 px face with the hands cut out, E the same at 24 px. D is the one implemented; `icon_clock()` in `dashboard.py` draws it.
 
 Output goes to [mockups/](mockups/) at 2x (960x640), plus an `overview.png` contact sheet. When the firmware layout changes, update the constants in `dashboard.py` to match.

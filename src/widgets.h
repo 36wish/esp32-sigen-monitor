@@ -2,8 +2,9 @@
 
 #include <lvgl.h>
 
-// LVGL building blocks, and vector icons drawn from lines and boxes (rather
-// than images) so they can be recoloured at runtime with setIconColor().
+// LVGL building blocks, and vector icons drawn from lines, boxes and A8 masks
+// (rather than colour images) so they can be recoloured at runtime with
+// setIconColor().
 
 // ── building blocks ──────────────────────────────────────────────────────
 
@@ -39,9 +40,12 @@ lv_obj_t *makeHouseIcon(lv_obj_t *tile);
 lv_obj_t *makeBattIcon(lv_obj_t *tile);
 void setBattIconLevel(lv_obj_t *battIcon, int soc);
 
-// Button icons: storm 32x32, the others 24x24.
+// Button icons: storm 32x35, clock 28x28, close 24x24.
 lv_obj_t *makeStormIcon(lv_obj_t *parent);
 lv_obj_t *makeClockIcon(lv_obj_t *parent);
 lv_obj_t *makeCloseIcon(lv_obj_t *parent);
 
 void setIconColor(lv_obj_t *icon, uint32_t col);
+// The clock's face takes `col`; its hands are cut out of it in `cutout`, the
+// colour behind the icon.
+void setClockIconColor(lv_obj_t *clock, uint32_t col, lv_color_t cutout);

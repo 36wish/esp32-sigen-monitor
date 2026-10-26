@@ -198,35 +198,80 @@ void setBattIconLevel(lv_obj_t *battIcon, int soc) {
   lv_obj_set_y(level, 23 - h);
 }
 
+// Anti-aliased fill of a polygon into an A8 mask (w x h, its top-left corner
+// at (ox, oy) in the polygon's coordinates): 4x4 samples per pixel, even-odd.
+static void fillPolygonMask(uint8_t *mask, int w, int h, int ox, int oy,
+                            const float (*pts)[2], int n) {
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      int hits = 0;
+      for (int s = 0; s < 16; s++) {
+        float px = ox + x + (s % 4 + 0.5f) / 4, py = oy + y + (s / 4 + 0.5f) / 4;
+        bool in = false;
+        for (int i = 0, j = n - 1; i < n; j = i++) {
+          const float *a = pts[i], *b = pts[j];
+          if ((a[1] > py) != (b[1] > py) &&
+              px < a[0] + (py - a[1]) * (b[0] - a[0]) / (b[1] - a[1]))
+            in = !in;
+        }
+        hits += in;
+      }
+      mask[y * w + x] = hits * 255 / 16;
+    }
+}
+
 lv_obj_t *makeStormIcon(lv_obj_t *parent) {
-  // thundercloud: three round puffs on a flat base, a bolt dropping out of it
-  static const lv_point_precise_t bolt[] = { {18, 18}, {12, 24}, {19, 24}, {13, 30} };
-  static const int16_t puffs[][3] = { {5, 6, 10}, {11, 2, 14}, {19, 7, 9} };  // x, y, diameter
+  // thundercloud: three round puffs on a flat base, a solid bolt dropping out
+  // of it. The bolt is an A8 mask drawn in image_recolor: LVGL has no polygon,
+  // and triangles sharing an edge leave an anti-aliasing seam along it.
+  static const int16_t puffs[][3] = { {5, 5, 10}, {11, 1, 14}, {19, 6, 9} };  // x, y, diameter
+  static const float bolt[][2] = { {14, 17.5f}, {21.5f, 17.5f}, {19.5f, 23}, {24.5f, 23},
+                                   {14, 34}, {15.5f, 26.5f}, {10.5f, 26.5f} };
+  static const int BOLT_X = 10, BOLT_Y = 17, BOLT_W = 15, BOLT_H = 18;  // the mask's box
+  static uint8_t boltMask[BOLT_W * BOLT_H];
+  static lv_image_dsc_t boltImg;
+  if (!boltImg.data) {
+    fillPolygonMask(boltMask, BOLT_W, BOLT_H, BOLT_X, BOLT_Y, bolt, 7);
+    boltImg.header.magic = LV_IMAGE_HEADER_MAGIC;
+    boltImg.header.cf = LV_COLOR_FORMAT_A8;
+    boltImg.header.w = BOLT_W;
+    boltImg.header.h = BOLT_H;
+    boltImg.header.stride = BOLT_W;
+    boltImg.data_size = sizeof(boltMask);
+    boltImg.data = boltMask;
+  }
   lv_obj_t *icon = makeBox(parent);
-  lv_obj_set_size(icon, 32, 32);
+  lv_obj_set_size(icon, 32, 35);
   for (const auto &p : puffs) {
     lv_obj_t *puff = makeFilledBox(icon, 0, LV_RADIUS_CIRCLE);
     lv_obj_set_pos(puff, p[0], p[1]);
     lv_obj_set_size(puff, p[2], p[2]);
   }
   lv_obj_t *base = makeFilledBox(icon, 0, 3);
-  lv_obj_set_pos(base, 4, 11);
+  lv_obj_set_pos(base, 4, 10);
   lv_obj_set_size(base, 25, 6);
-  iconLine(icon, bolt, 4, 3);
+  lv_obj_t *b = lv_image_create(icon);
+  lv_image_set_src(b, &boltImg);
+  lv_obj_set_pos(b, BOLT_X, BOLT_Y);
   return icon;
 }
 
+// Solid face with the hands cut out of it: colour it with setClockIconColor().
+// The face is centred on pixel 14, where the hands meet.
 lv_obj_t *makeClockIcon(lv_obj_t *parent) {
-  static const lv_point_precise_t hands[] = { {12, 6}, {12, 12}, {16, 14} };
+  static const lv_point_precise_t hands[] = { {14, 7}, {14, 14}, {19, 16} };
   lv_obj_t *icon = makeBox(parent);
-  lv_obj_set_size(icon, 24, 24);
-  lv_obj_t *face = makeBox(icon);
-  lv_obj_set_size(face, 20, 20);
-  lv_obj_set_pos(face, 2, 2);
-  lv_obj_set_style_radius(face, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_border_width(face, 2, 0);
-  iconLine(icon, hands, 3, 2);
+  lv_obj_set_size(icon, 28, 28);
+  lv_obj_t *face = makeFilledBox(icon, 0, LV_RADIUS_CIRCLE);
+  lv_obj_set_size(face, 27, 27);
+  lv_obj_set_pos(face, 1, 1);
+  iconLine(icon, hands, 3, 3);
   return icon;
+}
+
+void setClockIconColor(lv_obj_t *clock, uint32_t col, lv_color_t cutout) {
+  lv_obj_set_style_bg_color(lv_obj_get_child(clock, 0), lv_color_hex(col), 0);
+  lv_obj_set_style_line_color(lv_obj_get_child(clock, 1), cutout, 0);
 }
 
 lv_obj_t *makeCloseIcon(lv_obj_t *parent) {
@@ -239,7 +284,8 @@ lv_obj_t *makeCloseIcon(lv_obj_t *parent) {
   return icon;
 }
 
-// Lines take the colour as line colour, boxes as fill and border.
+// Lines take the colour as line colour, A8 masks as recolour, boxes as fill
+// and border.
 void setIconColor(lv_obj_t *icon, uint32_t col) {
   lv_color_t c = lv_color_hex(col);
   uint32_t n = lv_obj_get_child_count(icon);
@@ -247,6 +293,8 @@ void setIconColor(lv_obj_t *icon, uint32_t col) {
     lv_obj_t *ch = lv_obj_get_child(icon, i);
     if (lv_obj_check_type(ch, &lv_line_class)) {
       lv_obj_set_style_line_color(ch, c, 0);
+    } else if (lv_obj_check_type(ch, &lv_image_class)) {
+      lv_obj_set_style_image_recolor(ch, c, 0);
     } else {
       lv_obj_set_style_bg_color(ch, c, 0);
       lv_obj_set_style_border_color(ch, c, 0);

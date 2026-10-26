@@ -48,21 +48,27 @@ BAR_MAX_KW = 8
 
 
 # ── icons (makeXxxIcon in widgets.cpp) ───────────────────────────────────
+STORM_BOLT = [(14, 17.5), (21.5, 17.5), (19.5, 23), (24.5, 23), (14, 34), (15.5, 26.5), (10.5, 26.5)]
+
+
 def icon_storm(c, cx, cy, s, col, bg=None):
-    """Thundercloud on a 32px grid: three circles + a rounded box, 3px bolt."""
+    """Thundercloud on a 32x35 grid: three circles + a rounded box, solid bolt
+    (storm_b_variants.py's B4)."""
     k = s / 32
-    P = lambda x, y: (cx + (x - 16) * k, cy + (y - 16) * k)
-    for x, y, r in ((10, 11, 5), (18, 8.5, 7), (24, 12, 4.5)):
+    P = lambda x, y: (cx + (x - 16) * k, cy + (y - 17.5) * k)
+    for x, y, r in ((10, 10, 5), (18, 8, 7), (23.5, 10.5, 4.5)):
         c.circle(*P(x, y), r * k, fill=col)
-    x0, y0 = P(4, 11); x1, y1 = P(28.5, 17)
+    x0, y0 = P(4, 10); x1, y1 = P(29, 16)
     c.rrect(x0, y0, x1, y1, 3 * k, fill=col)
-    c.line([P(18, 19), P(12, 25), P(19, 25), P(13, 31)], col, 3 * k)
+    c.d.polygon([(x * K, y * K) for x, y in (P(*p) for p in STORM_BOLT)], fill=col)
 
 
 def icon_clock(c, cx, cy, s, col, bg=None):
-    c.circle(cx, cy, s * 0.46, outline=col, width=s * 0.1)
-    c.line([(cx, cy), (cx, cy - s * 0.26)], col, s * 0.1)
-    c.line([(cx, cy), (cx + s * 0.18, cy + s * 0.08)], col, s * 0.1)
+    """28x28 box: solid face, hands cut out in bg (clock_icon.py's D). LVGL
+    pixel (x, y) is centred on box coordinate (x + 0.5, y + 0.5)."""
+    P = lambda x, y: (cx - 14 + x + 0.5, cy - 14 + y + 0.5)
+    c.circle(*P(14, 14), 13.5, fill=col)
+    c.line([P(14, 7), P(14, 14), P(19, 16)], bg or CARD, 3)
 
 
 def icon_close(c, cx, cy, s, col, bg=None):
@@ -129,19 +135,22 @@ def mix_bar(c, shares):
 
 
 def icon_button(c, x, y, w, h, icon, accent, on=False, size=24):
-    """makeButton(): raised with a drop shadow; checked sinks BTN_DROP px."""
+    """makeButton(): raised with a drop shadow; checked sinks BTN_DROP px.
+    The icon gets the colour half way down the gradient, for cut-outs."""
     DROP, r = 3, 10
     if on:
         y += DROP
-        c.grad_rrect(x, y, x + w, y + h, r, mix(accent, BG, 0.18), mix(accent, BG, 0.50))
+        top, bottom = mix(accent, BG, 0.18), mix(accent, BG, 0.50)
+        c.grad_rrect(x, y, x + w, y + h, r, top, bottom)
         c.rrect(x, y, x + w, y + h, r, outline=accent, width=2)
         fg = TEXT
     else:
+        top, bottom = mix(TEXT, CARD2, 0.07), CARD2
         c.rrect(x, y + DROP, x + w, y + h + DROP, r, fill=SHADOW)
-        c.grad_rrect(x, y, x + w, y + h, r, mix(TEXT, CARD2, 0.07), CARD2)
+        c.grad_rrect(x, y, x + w, y + h, r, top, bottom)
         c.rrect(x, y, x + w, y + h, r, outline=BORDER, width=1)
         fg = accent
-    icon(c, x + w / 2, y + h / 2, size, fg, None)
+    icon(c, x + w / 2, y + h / 2, size, fg, mix(top, bottom, 0.5))
 
 
 def mode_buttons(c, charge_on):
@@ -275,7 +284,7 @@ def summary_card(c, start, end, grid_kwh, batt_kwh, house_kwh, soc):
     c.img.alpha_composite(Image.new("RGBA", c.img.size, BG + (204,)))
     x0, y0 = SUM_X, SUM_Y
     c.rrect(x0, y0, x0 + SUM_W, y0 + SUM_H, 16, fill=CARD, outline=BORDER, width=1)
-    icon_clock(c, x0 + 30, y0 + 28, 24, FREE)
+    icon_clock(c, x0 + 30, y0 + 28, 28, FREE, CARD)   # box at (16, 14)
     c.text(x0 + 50, y0 + 28, "FREE HOUR DONE", 14, FREE, "b", "lm", spacing=2)
     # what came from the grid, then when
     v = f"{grid_kwh:.1f}"

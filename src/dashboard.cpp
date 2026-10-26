@@ -281,6 +281,13 @@ static void buildMixBar(lv_obj_t *scr) {
 }
 
 // Home screen mode buttons: Charge (a toggle) over Free hour.
+// The clock's hands are cut out in the Free hour button's colour half way down
+// its gradient: makeButton()'s when normal, the checked one when pressed in.
+static void setFreeIconColor(bool checked) {
+  if (checked) setClockIconColor(freeIcon, COL_TEXT, tint(COL_FREE, COL_BG, (46 + 128) / 2));
+  else         setClockIconColor(freeIcon, COL_FREE, tint(COL_TEXT, COL_CARD2, 18 / 2));
+}
+
 static void buildModeButtons(lv_obj_t *scr) {
   chargeBtn = makeButton(scr, MODE_BTN_X, CHARGE_BTN_Y, MODE_BTN_W, MODE_BTN_H);
   lv_obj_add_flag(chargeBtn, LV_OBJ_FLAG_CHECKABLE);
@@ -299,7 +306,7 @@ static void buildModeButtons(lv_obj_t *scr) {
   lv_obj_set_style_border_color(freeBtn, lv_color_hex(COL_FREE), LV_STATE_CHECKED);
   lv_obj_set_style_border_width(freeBtn, 2, LV_STATE_CHECKED);
   freeIcon = makeClockIcon(freeBtn);
-  setIconColor(freeIcon, COL_FREE);
+  setFreeIconColor(false);
   lv_obj_add_event_cb(freeBtn, onFreeHourOpen, LV_EVENT_CLICKED, nullptr);
 }
 
@@ -401,8 +408,8 @@ static void buildFreeSummary(lv_obj_t *scr) {
   lv_obj_center(card);
 
   lv_obj_t *icon = makeClockIcon(card);
-  setIconColor(icon, COL_FREE);
-  lv_obj_set_pos(icon, 18, 16);
+  setClockIconColor(icon, COL_FREE, lv_color_hex(COL_CARD));
+  lv_obj_set_pos(icon, 16, 14);
   lv_obj_t *title = makeLabel(card, &lv_font_montserrat_14, COL_FREE, "FREE HOUR DONE");
   lv_obj_set_style_text_letter_space(title, 2, 0);
   lv_obj_set_pos(title, 50, 20);
@@ -847,7 +854,7 @@ static void showPendingRelease() {
   setVisible(pendingTitle, show);
   if (show) lv_obj_add_state(freeBtn, LV_STATE_CHECKED);
   else      lv_obj_remove_state(freeBtn, LV_STATE_CHECKED);
-  setIconColor(freeIcon, show ? COL_TEXT : COL_FREE);
+  setFreeIconColor(show);
 }
 
 void showReleasePending(bool on) {
