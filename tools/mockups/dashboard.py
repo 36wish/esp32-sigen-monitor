@@ -109,13 +109,20 @@ def text_sx(c, x, y, s, size, color, sx=1.0, w="sb"):
     return c.d.textlength(s, font=f) / K * sx
 
 
-def hero(c, tile_icon, tile_col, kw, num=TEXT, tile=TILE, text=None):
+def hero(c, tile_icon, tile_col, kw, num=TEXT, tile=TILE, text=None, ref="4"):
+    """The integer part right-aligns to a fixed decimal point, measured from
+    `ref` ("4" on home, "14" in free hour), as setHeroInt() does."""
     x, y, t = tile
     tbg = mix(tile_col, CARD, 0.16)
     c.rrect(x, y, x + t, y + t, 10, fill=tbg)
     tile_icon(c, x + t / 2, y + t / 2, 22, tile_col, tbg)
     value = text or f"{kw:.1f}"
-    w = text_sx(c, HERO_X, HERO_BASE, value, 144, num)
+    f = R.font(144, "sb")
+    dec_x = HERO_X + c.d.textlength(ref, font=f) / K
+    whole, frac = value.split(".") if "." in value else (value, "")
+    wx = dec_x - c.d.textlength(whole, font=f) / K
+    text_sx(c, wx, HERO_BASE, whole, 144, num)
+    w = dec_x - HERO_X + text_sx(c, dec_x, HERO_BASE, "." + frac, 144, num) if frac else dec_x - HERO_X
     c.text(HERO_X + w + 8, HERO_BASE, "kW", 24, MUTED, "r", "ls")
 
 
@@ -270,7 +277,7 @@ def free_screen(path, pv, grid, ess, soc, clock, left_s, hero_text=None, kwh=3.9
     c = Canvas()
     top_bar(c, clock)
     hero(c, tower, IMPORT, max(0, grid), num=OFFPEAK if is_offpeak(clock) else TEXT,
-         tile=FREE_TILE, text=hero_text)
+         tile=FREE_TILE, text=hero_text, ref="14")
     free_header(c, left_s, kwh)
     battery(c, soc)
     strip(c, [(sun, SOLAR, f"{pv:.1f}", pv),
