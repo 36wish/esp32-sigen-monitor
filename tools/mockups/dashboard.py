@@ -342,9 +342,9 @@ if __name__ == "__main__":
     os.makedirs(out, exist_ok=True)
     P = lambda n: os.path.join(out, n)
     day = dict(pv=4.2, grid=-1.3, ess=0.5, soc=76, clock="14:20")
-    charge = dict(pv=4.2, grid=1.7, ess=3.5, soc=100, clock="14:20")
+    charge = dict(pv=4.2, grid=1.7, ess=3.5, soc=78, clock="14:20")
     night = dict(pv=0.0, grid=1.2, ess=0.0, soc=45, clock="22:15")
-    free = dict(pv=0.2, grid=6.8, ess=4.5, soc=54, clock="20:36", left_s=23 * 60 + 41)
+    free = dict(pv=2.1, grid=12.4, ess=4.5, soc=54, clock="20:36", left_s=23 * 60 + 41)
     files = [P(n) for n in ("home.png", "home-charge-on.png", "home-offpeak.png", "home-widest.png",
                             "free-hour.png", "free-hour-widest.png", "free-hour-summary.png")]
     home_screen(files[0], **day)
