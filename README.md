@@ -21,12 +21,12 @@ The display connects over WiFi, finds the Sigenergy system on the network by its
 
 - **Charge button.** A toggle for holding the battery full, for example before a big weather event. When pressed it sets the system's backup reserve (Backup SOC) to 100%. Released, it sets it back to 30%. 
 
-  ![Home screen with the Charge button pressed in and the battery at 100%](img/home-charge-on.png)
+  ![Home screen with the Charge button pressed in and the battery at 78%](img/home-charge-on.png)
 
   *Charge on: the button stays pressed in and the battery reserve is held at 100%.*
 - **Free hour mode.** For power plans that include a free hour of electricity. Tap the clock button when the free hour starts. When activated, the house runs entirely from the grid and the battery charges from the grid at full rate. It counts down to the start of the next hour, then automatically switches back to normal. The big number on screen switches to grid import, and beside the countdown is the energy taken from the grid so far.
 
-  ![Free hour screen showing grid import, the kWh used so far, a countdown to the top of the hour and the battery charging](img/free-hour.png)
+  ![Free hour screen showing 12.4 kW grid import, 3.9 kWh imported so far, a countdown to the top of the hour, the battery charging at 4.5 kW and 10.0 kW house load](img/free-hour.png)
 
   *Free hour: the big number shows grid import, with the kWh used so far and a countdown to the top of the hour. The close button returns to the home screen.*
 
@@ -35,11 +35,11 @@ The display connects over WiFi, finds the Sigenergy system on the network by its
   ![Summary card over the home screen: 6.4 kWh from 20:03 to 21:00, 4.3 kWh into the battery and 2.1 kWh to the house](img/free-hour-summary.png)
 - **Off-peak indicator.** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
 
-  ![Home screen at 22:15 with the big number in grey](img/home-offpeak.png)
+  ![Home screen at 22:15 with the 1.2 kW house load in grey, the mix bar all grid and the battery at 45%](img/home-offpeak.png)
 
   *Off-peak: after 21:00 the big number is grey. Here the house is running entirely from the grid.*
 - **Finds the system by itself.** On first boot it scans your home network  for the system. It will save the IP address so it can connect later without rescanning.
-- **Reconnects by itself.** If WiFi drops, it restarts WiFi and keeps trying until it's back. If the system stops answering for 2 minutes, it restarts WiFi even when the connection looks fine, and after 10 minutes it restarts itself (but not during a free hour). Type `diag` in a serial monitor (115200 baud) to see the connection state and why it last restarted itself.
+- **Reconnects by itself.** If WiFi drops, it restarts WiFi and keeps trying until it's back. If the system stops answering for 2 minutes, it restarts WiFi even when the connection looks fine, and after 10 minutes it restarts itself (but not during a free hour). Type `diag` in a serial monitor to see the connection state and why it last restarted itself.
 - **Auto-brightness.** The screen adjusts brightness according to room light level, and will switch off when th eroom is completely dark.
 
 ## Hardware
