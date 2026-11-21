@@ -123,6 +123,7 @@ There is a serial console at 115200 baud. Connect as follows:
    ```
 
 | Command | Details |
+|---|---|
 | (auto) | Light reading is shown every 10 seconds |
 | `diag` | device connection state and why it last restarted |
 | `cal` | Calibrate screen |
