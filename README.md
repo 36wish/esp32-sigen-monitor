@@ -36,7 +36,7 @@ It is self contained and does not require the cloud, an app, or Home Assistant.
 
   ![Summary card over the home screen: 6.4 kWh from 20:03 to 21:00, 4.3 kWh into the battery and 2.1 kWh to the house](img/free-hour-summary.png)
 
-- **Off-peak indicator.** Between 21:00 and 07:00, when the overnight rate is cheaper, the big number turns grey.
+- **Off-peak indicator.** When the overnight rate is cheaper, the big number turns grey.
 
   ![Home screen at 22:15 with the 1.2 kW house load in grey, the mix bar all grid and the battery at 45%](img/home-offpeak.png)
 
